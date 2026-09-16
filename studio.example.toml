@@ -1,2 +1,23 @@
+log_capacity = 500
+stop_timeout_ms = 3000
+
 [server]
 listen_addr = "127.0.0.1:18100"
+
+[mcp.blender]
+name = "Blender"
+command = "../blender/target/debug/rust-mcp-blender"
+working_dir = "../blender"
+args = []
+
+[mcp.filesystem]
+name = "Filesystem"
+command = "../filesystem/target/debug/rust-mcp-filesystem"
+working_dir = "../filesystem"
+args = ["--root", ".."]
+
+[mcp.git]
+name = "Git"
+command = "../git/target/debug/rust-mcp-git"
+working_dir = "../git"
+args = ["--root", "../.."]

@@ -1,8 +1,14 @@
-use std::net::SocketAddr;
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use anyhow::Result;
 use clap::Parser;
-use mcp_studio::{api, config::StudioConfig, logging};
+use mcp_studio::{
+    api::{self, AppState},
+    config::StudioConfig,
+    logging,
+    registry::Registry,
+    supervisor::Supervisor,
+};
 
 #[derive(Debug, Parser)]
 #[command(version, about = "MCP Studio local control plane")]
@@ -23,12 +29,29 @@ async fn main() -> Result<()> {
     };
     config.validate()?;
 
+    let base_dir = std::env::current_dir()?;
+    let supervisor = Arc::new(Supervisor::new(
+        Registry::new(config.mcp.clone()),
+        config.log_capacity,
+        Duration::from_millis(config.stop_timeout_ms),
+        base_dir,
+    ));
+
     let addr: SocketAddr = config.server.listen_addr.parse()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!(listen_addr = %addr, "starting MCP Studio foundation service");
+    tracing::info!(
+        listen_addr = %addr,
+        managed_mcp_count = config.mcp.len(),
+        "starting MCP Studio core supervisor"
+    );
 
-    axum::serve(listener, api::router())
-        .with_graceful_shutdown(shutdown_signal())
+    let shutdown_supervisor = supervisor.clone();
+    let app = api::router(AppState { supervisor });
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            shutdown_signal().await;
+            shutdown_supervisor.shutdown_all().await;
+        })
         .await?;
     Ok(())
 }
@@ -54,5 +77,5 @@ async fn shutdown_signal() {
         _ = terminate => {},
     }
 
-    tracing::info!("shutdown signal received");
+    tracing::info!("shutdown signal received; stopping managed MCP processes");
 }
