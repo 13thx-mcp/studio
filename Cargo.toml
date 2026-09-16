@@ -1,0 +1,29 @@
+[package]
+name = "mcp-studio"
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.98.1"
+license = "MIT"
+description = "Local-first web control plane for MCP servers and secure tunnels"
+publish = false
+
+[dependencies]
+anyhow = "1"
+axum = { version = "0.8", features = ["json", "ws"] }
+clap = { version = "4", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net"] }
+toml = "0.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"

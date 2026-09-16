@@ -1,0 +1,102 @@
+# Rust / Cargo
+/target/
+**/target/
+
+# Keep Cargo.lock committed for this application/binary project
+!Cargo.lock
+
+# Runtime data / local state
+/data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.pid
+*.sock
+*.lock.tmp
+
+# Logs / diagnostics / local issue captures
+*.log
+/logs/
+/issues/
+/diagnostics/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cert
+*.token
+*.secret
+secrets/
+
+# Local Studio configuration
+studio.toml
+studio.local.toml
+config.local.toml
+config.override.toml
+!studio.example.toml
+
+# Frontend dependencies / build output
+/web/node_modules/
+/web/dist/
+/web/.vite/
+/web/.cache/
+/web/coverage/
+/web/*.local
+
+# JavaScript package manager noise
+/web/npm-debug.log*
+/web/yarn-debug.log*
+/web/yarn-error.log*
+/web/pnpm-debug.log*
+
+# Test / coverage artifacts
+/coverage/
+*.profraw
+*.profdata
+lcov.info
+
+# Temporary / generated files
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*~
+.cache/
+.tmp/
+
+# OS metadata
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+Desktop.ini
+
+# IDE / editor metadata
+.idea/
+.vscode/
+*.iml
+*.code-workspace
+
+# Rust analyzer / tooling local state
+.rustc_info.json
+
+# Local certificates / tunnel runtime material
+/certs/
+/tls/
+/tunnel-state/
+
+# Generated release/package output
+/dist/
+/releases/
+
+# Preserve committed project templates and examples
+!studio.example.toml
