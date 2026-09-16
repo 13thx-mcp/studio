@@ -5,14 +5,17 @@ use std::{
     fs,
     os::unix::fs::PermissionsExt,
     path::PathBuf,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
 };
 
 use mcp_studio::{
     error::StudioError,
     realtime::{EventHub, StudioEvent},
-    tunnel::{SecretReference, TunnelConfig, TunnelState, TunnelSupervisor},
+    tunnel::{SecretReference, TunnelConfig, TunnelState, TunnelStatus, TunnelSupervisor},
 };
+
+static NEXT_FIXTURE_ID: AtomicU64 = AtomicU64::new(1);
 
 struct Fixture {
     root: PathBuf,
@@ -23,13 +26,10 @@ impl Fixture {
         let unique = format!(
             "mcp-studio-tunnel-test-{}-{}",
             std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            NEXT_FIXTURE_ID.fetch_add(1, Ordering::Relaxed)
         );
         let root = std::env::temp_dir().join(unique);
-        fs::create_dir_all(&root).unwrap();
+        fs::create_dir(&root).unwrap();
         fs::write(root.join("config.yaml"), "config_version: 1\n").unwrap();
         let runtime = root.join("runtime.sh");
         fs::write(&runtime, script).unwrap();
@@ -133,7 +133,13 @@ async fn unexpected_zero_exit_is_still_a_crash() {
 
     assert_eq!(terminal.crash_count, 1);
     assert_eq!(terminal.last_exit_code, Some(0));
-    assert!(terminal.last_error.as_deref().unwrap_or_default().contains("unexpectedly"));
+    assert!(
+        terminal
+            .last_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("unexpectedly")
+    );
 }
 
 #[tokio::test]
@@ -153,7 +159,10 @@ async fn invalid_runtime_is_rejected_and_recorded_as_failed() {
         EventHub::default(),
     );
 
-    assert!(matches!(supervisor.start().await, Err(StudioError::Config(_))));
+    assert!(matches!(
+        supervisor.start().await,
+        Err(StudioError::Config(_))
+    ));
     let status = supervisor.status().await;
     assert_eq!(status.state, TunnelState::Failed);
     assert!(!status.runtime_available);
@@ -172,7 +181,8 @@ async fn publishes_realtime_status_and_log_events() {
     let mut saw_status = false;
     let mut saw_log = false;
     for _ in 0..12 {
-        let Ok(Ok(event)) = tokio::time::timeout(Duration::from_millis(250), receiver.recv()).await else {
+        let Ok(Ok(event)) = tokio::time::timeout(Duration::from_millis(250), receiver.recv()).await
+        else {
             break;
         };
         match event {
@@ -180,7 +190,8 @@ async fn publishes_realtime_status_and_log_events() {
                 saw_status = true;
             }
             StudioEvent::TunnelLog { entry }
-                if entry.message.contains("started PID") || entry.message.contains("tunnel ready") =>
+                if entry.message.contains("started PID")
+                    || entry.message.contains("tunnel ready") =>
             {
                 saw_log = true;
             }
@@ -233,17 +244,17 @@ async fn secret_value_is_redacted_before_logs_are_exposed() {
     supervisor.shutdown().await;
 }
 
-async fn wait_for_state(
-    supervisor: &TunnelSupervisor,
-    expected: TunnelState,
-) -> mcp_studio::tunnel::TunnelStatus {
-    let mut status = supervisor.status().await;
-    for _ in 0..40 {
+async fn wait_for_state(supervisor: &TunnelSupervisor, expected: TunnelState) -> TunnelStatus {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let status = supervisor.status().await;
         if status.state == expected {
             return status;
         }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for tunnel state {expected:?}; last status: {status:?}"
+        );
         tokio::time::sleep(Duration::from_millis(25)).await;
-        status = supervisor.status().await;
     }
-    status
 }
