@@ -18,11 +18,13 @@ use crate::{
     error::StudioError,
     realtime::StudioEvent,
     supervisor::{LogEntry, ProcessStatus, Supervisor},
+    tunnel::{TunnelLogEntry, TunnelStatus, TunnelSupervisor},
 };
 
 #[derive(Clone)]
 pub struct AppState {
     pub supervisor: Arc<Supervisor>,
+    pub tunnel: Arc<TunnelSupervisor>,
 }
 
 #[derive(Serialize)]
@@ -36,6 +38,7 @@ struct HealthResponse {
 struct ApiStatusResponse {
     status: &'static str,
     managed_mcp_count: usize,
+    tunnel_state: crate::tunnel::TunnelState,
 }
 
 #[derive(Serialize)]
@@ -55,6 +58,11 @@ pub fn router(state: AppState) -> Router {
         .route("/api/mcp/{id}/stop", post(stop_mcp))
         .route("/api/mcp/{id}/restart", post(restart_mcp))
         .route("/api/mcp/{id}/logs", get(get_logs))
+        .route("/api/tunnel", get(get_tunnel))
+        .route("/api/tunnel/start", post(start_tunnel))
+        .route("/api/tunnel/stop", post(stop_tunnel))
+        .route("/api/tunnel/restart", post(restart_tunnel))
+        .route("/api/tunnel/logs", get(get_tunnel_logs))
         .route("/api/ws", get(websocket))
         .fallback_service(web)
         .with_state(state)
@@ -70,9 +78,11 @@ async fn health() -> Json<HealthResponse> {
 
 async fn api_status(State(state): State<AppState>) -> Json<ApiStatusResponse> {
     let servers = state.supervisor.list().await;
+    let tunnel = state.tunnel.status().await;
     Json(ApiStatusResponse {
         status: "ok",
         managed_mcp_count: servers.len(),
+        tunnel_state: tunnel.state,
     })
 }
 
@@ -121,68 +131,99 @@ async fn get_logs(
     Ok(Json(state.supervisor.logs(&id).await?))
 }
 
+async fn get_tunnel(State(state): State<AppState>) -> Json<TunnelStatus> {
+    Json(state.tunnel.status().await)
+}
+
+async fn start_tunnel(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<TunnelStatus>, ApiError> {
+    ensure_same_origin(&headers)?;
+    Ok(Json(state.tunnel.start().await?))
+}
+
+async fn stop_tunnel(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<TunnelStatus>, ApiError> {
+    ensure_same_origin(&headers)?;
+    Ok(Json(state.tunnel.stop().await?))
+}
+
+async fn restart_tunnel(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<TunnelStatus>, ApiError> {
+    ensure_same_origin(&headers)?;
+    Ok(Json(state.tunnel.restart().await?))
+}
+
+async fn get_tunnel_logs(State(state): State<AppState>) -> Json<Vec<TunnelLogEntry>> {
+    Json(state.tunnel.logs().await)
+}
+
 async fn websocket(
     State(state): State<AppState>,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
     ensure_same_origin(&headers)?;
-    Ok(ws
-        .on_upgrade(move |socket| websocket_session(socket, state.supervisor))
-        .into_response())
+    Ok(ws.on_upgrade(move |socket| websocket_session(socket, state)).into_response())
 }
 
-async fn websocket_session(mut socket: WebSocket, supervisor: Arc<Supervisor>) {
-    if send_event(
-        &mut socket,
-        &StudioEvent::Snapshot {
-            servers: supervisor.list().await,
-        },
-    )
-    .await
-    .is_err()
-    {
+async fn websocket_session(mut socket: WebSocket, state: AppState) {
+    if send_snapshot(&mut socket, &state).await.is_err() {
         return;
     }
 
-    let mut receiver = supervisor.subscribe_events();
+    let mut mcp_receiver = state.supervisor.subscribe_events();
+    let mut tunnel_receiver = state.tunnel.subscribe_events();
     loop {
-        match receiver.recv().await {
-            Ok(event) => {
-                if send_event(&mut socket, &event).await.is_err() {
+        tokio::select! {
+            result = mcp_receiver.recv() => {
+                if handle_event_result(&mut socket, &state, result).await.is_err() {
                     break;
                 }
             }
-            Err(RecvError::Lagged(_)) => {
-                if send_event(&mut socket, &StudioEvent::ResyncRequired)
-                    .await
-                    .is_err()
-                {
-                    break;
-                }
-                if send_event(
-                    &mut socket,
-                    &StudioEvent::Snapshot {
-                        servers: supervisor.list().await,
-                    },
-                )
-                .await
-                .is_err()
-                {
+            result = tunnel_receiver.recv() => {
+                if handle_event_result(&mut socket, &state, result).await.is_err() {
                     break;
                 }
             }
-            Err(RecvError::Closed) => break,
         }
     }
 }
 
+async fn handle_event_result(
+    socket: &mut WebSocket,
+    state: &AppState,
+    result: Result<StudioEvent, RecvError>,
+) -> Result<(), ()> {
+    match result {
+        Ok(event) => send_event(socket, &event).await,
+        Err(RecvError::Lagged(_)) => {
+            send_event(socket, &StudioEvent::ResyncRequired).await?;
+            send_snapshot(socket, state).await
+        }
+        Err(RecvError::Closed) => Err(()),
+    }
+}
+
+async fn send_snapshot(socket: &mut WebSocket, state: &AppState) -> Result<(), ()> {
+    send_event(
+        socket,
+        &StudioEvent::Snapshot {
+            servers: state.supervisor.list().await,
+            tunnel: state.tunnel.status().await,
+        },
+    )
+    .await
+}
+
 async fn send_event(socket: &mut WebSocket, event: &StudioEvent) -> Result<(), ()> {
     let payload = serde_json::to_string(event).map_err(|_| ())?;
-    socket
-        .send(Message::Text(payload.into()))
-        .await
-        .map_err(|_| ())
+    socket.send(Message::Text(payload.into())).await.map_err(|_| ())
 }
 
 fn ensure_same_origin(headers: &HeaderMap) -> Result<(), ApiError> {
@@ -190,9 +231,7 @@ fn ensure_same_origin(headers: &HeaderMap) -> Result<(), ApiError> {
         return Ok(());
     };
     let Some(host) = headers.get(axum::http::header::HOST) else {
-        return Err(ApiError::forbidden(
-            "missing Host header for browser request",
-        ));
+        return Err(ApiError::forbidden("missing Host header for browser request"));
     };
 
     let origin = origin
@@ -261,7 +300,12 @@ mod tests {
     use axum::{body::Body, http::Request};
     use tower::ServiceExt;
 
-    use crate::{registry::Registry, supervisor::Supervisor};
+    use crate::{
+        realtime::EventHub,
+        registry::Registry,
+        supervisor::Supervisor,
+        tunnel::{TunnelConfig, TunnelSupervisor},
+    };
 
     fn test_router() -> axum::Router {
         let supervisor = Supervisor::new(
@@ -270,8 +314,22 @@ mod tests {
             Duration::from_millis(100),
             PathBuf::from("."),
         );
+        let tunnel = TunnelSupervisor::new(
+            TunnelConfig {
+                name: "Test tunnel".into(),
+                runtime: PathBuf::from("missing-runtime"),
+                working_dir: PathBuf::from("."),
+                config_file: PathBuf::from("missing-config"),
+                env: BTreeMap::new(),
+            },
+            32,
+            Duration::from_millis(100),
+            PathBuf::from("."),
+            EventHub::default(),
+        );
         super::router(super::AppState {
             supervisor: Arc::new(supervisor),
+            tunnel: Arc::new(tunnel),
         })
     }
 
@@ -310,6 +368,23 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/api/mcp/missing/start")
+                    .header("host", "127.0.0.1:18100")
+                    .header("origin", "https://example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn rejects_cross_origin_tunnel_lifecycle_request() {
+        let response = test_router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/tunnel/start")
                     .header("host", "127.0.0.1:18100")
                     .header("origin", "https://example.com")
                     .body(Body::empty())

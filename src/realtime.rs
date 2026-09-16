@@ -1,6 +1,9 @@
 use tokio::sync::broadcast;
 
-use crate::supervisor::{LogEntry, ProcessStatus};
+use crate::{
+    supervisor::{LogEntry, ProcessStatus},
+    tunnel::{TunnelLogEntry, TunnelStatus},
+};
 
 pub const EVENT_CHANNEL_CAPACITY: usize = 1024;
 
@@ -9,6 +12,7 @@ pub const EVENT_CHANNEL_CAPACITY: usize = 1024;
 pub enum StudioEvent {
     Snapshot {
         servers: Vec<ProcessStatus>,
+        tunnel: TunnelStatus,
     },
     ProcessStatus {
         mcp_id: String,
@@ -17,6 +21,12 @@ pub enum StudioEvent {
     Log {
         mcp_id: String,
         entry: LogEntry,
+    },
+    TunnelStatus {
+        status: TunnelStatus,
+    },
+    TunnelLog {
+        entry: TunnelLogEntry,
     },
     ResyncRequired,
 }

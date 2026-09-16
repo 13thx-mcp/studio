@@ -1,7 +1,10 @@
-import type { LogEntry, ProcessStatus } from "./types";
+import type { LogEntry, ProcessStatus, TunnelLogEntry, TunnelStatus } from "./types";
 
-export function mergeLogEntries(current: LogEntry[], incoming: LogEntry[]): LogEntry[] {
-  const bySequence = new Map<number, LogEntry>();
+type LifecycleStatus = Pick<ProcessStatus, "state"> | Pick<TunnelStatus, "state">;
+type SequencedLog = LogEntry | TunnelLogEntry;
+
+export function mergeLogEntries<T extends SequencedLog>(current: T[], incoming: T[]): T[] {
+  const bySequence = new Map<number, T>();
   for (const entry of current) bySequence.set(entry.sequence, entry);
   for (const entry of incoming) bySequence.set(entry.sequence, entry);
   return [...bySequence.values()].sort((a, b) => a.sequence - b.sequence);
@@ -26,7 +29,7 @@ export function formatLogMessage(message: string): string {
 }
 
 export function actionEnabled(
-  status: ProcessStatus,
+  status: LifecycleStatus,
   action: "start" | "stop" | "restart",
 ): boolean {
   if (status.state === "starting" || status.state === "stopping") return false;

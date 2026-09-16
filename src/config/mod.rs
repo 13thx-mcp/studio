@@ -7,7 +7,10 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{StudioError, StudioResult};
+use crate::{
+    error::{StudioError, StudioResult},
+    tunnel::TunnelConfig,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StudioConfig {
@@ -19,6 +22,8 @@ pub struct StudioConfig {
     pub stop_timeout_ms: u64,
     #[serde(default)]
     pub mcp: BTreeMap<String, McpServerConfig>,
+    #[serde(default)]
+    pub tunnel: TunnelConfig,
 }
 
 impl Default for StudioConfig {
@@ -28,6 +33,7 @@ impl Default for StudioConfig {
             log_capacity: default_log_capacity(),
             stop_timeout_ms: default_stop_timeout_ms(),
             mcp: default_mcp_registry(),
+            tunnel: TunnelConfig::default(),
         }
     }
 }
@@ -107,7 +113,7 @@ impl StudioConfig {
         })?;
         if !is_loopback(addr.ip()) {
             return Err(StudioError::Config(
-                "Milestone 1 permits loopback bind addresses only; remote access requires an explicit security design".into(),
+                "Studio permits loopback bind addresses only; remote access requires an explicit security design".into(),
             ));
         }
         if self.log_capacity == 0 {
@@ -133,6 +139,39 @@ impl StudioConfig {
                 return Err(StudioError::Config(format!(
                     "MCP {id}: command must not be empty"
                 )));
+            }
+        }
+        if self.tunnel.name.trim().is_empty() {
+            return Err(StudioError::Config("tunnel.name must not be empty".into()));
+        }
+        if self.tunnel.runtime.as_os_str().is_empty()
+            || self.tunnel.working_dir.as_os_str().is_empty()
+            || self.tunnel.config_file.as_os_str().is_empty()
+        {
+            return Err(StudioError::Config(
+                "tunnel runtime, working_dir, and config_file must not be empty".into(),
+            ));
+        }
+        for (key, reference) in &self.tunnel.env {
+            if key.trim().is_empty() {
+                return Err(StudioError::Config(
+                    "tunnel environment variable name must not be empty".into(),
+                ));
+            }
+            match reference {
+                crate::tunnel::SecretReference::FromEnv { from_env } if from_env.trim().is_empty() => {
+                    return Err(StudioError::Config(format!(
+                        "tunnel secret reference for {key} has an empty from_env"
+                    )));
+                }
+                crate::tunnel::SecretReference::FromFile { from_file }
+                    if from_file.as_os_str().is_empty() =>
+                {
+                    return Err(StudioError::Config(format!(
+                        "tunnel secret reference for {key} has an empty from_file"
+                    )));
+                }
+                _ => {}
             }
         }
         Ok(())

@@ -4,6 +4,18 @@ stop_timeout_ms = 3000
 [server]
 listen_addr = "127.0.0.1:18100"
 
+[tunnel]
+name = "Secure tunnel"
+runtime = "../tunnel-client/tunnel-client-runtime-cloudflared"
+working_dir = "../tunnel-client"
+config_file = "../tunnel-client/config.yaml"
+
+# Optional server-side secret references. Values are resolved only by Studio
+# and are never returned through the API/WebSocket/dashboard.
+# [tunnel.env]
+# TUNNEL_TOKEN = { from_env = "MCP_TUNNEL_TOKEN" }
+# CLOUDFLARED_CREDENTIAL = { from_file = "../secrets/cloudflared-token" }
+
 [mcp.blender]
 name = "Blender"
 command = "../blender/target/debug/rust-mcp-blender"
