@@ -12,6 +12,7 @@ use axum::{
 };
 use serde::Serialize;
 use tokio::sync::broadcast::error::RecvError;
+use tower_http::services::{ServeDir, ServeFile};
 
 use crate::{
     error::StudioError,
@@ -43,6 +44,8 @@ struct ErrorResponse {
 }
 
 pub fn router(state: AppState) -> Router {
+    let web = ServeDir::new("web/dist").not_found_service(ServeFile::new("web/dist/index.html"));
+
     Router::new()
         .route("/health", get(health))
         .route("/api/status", get(api_status))
@@ -53,6 +56,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/mcp/{id}/restart", post(restart_mcp))
         .route("/api/mcp/{id}/logs", get(get_logs))
         .route("/api/ws", get(websocket))
+        .fallback_service(web)
         .with_state(state)
 }
 

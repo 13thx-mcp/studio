@@ -2,31 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 
 import { getLogs, lifecycleAction, listServers } from "./api";
 import { connectRealtime, type ConnectionState } from "./realtime";
+import { actionEnabled, formatUptime, mergeLogEntries } from "./state";
 import type { LogEntry, ProcessStatus, StudioEvent } from "./types";
 import "./styles.css";
-
-function mergeLogEntries(current: LogEntry[], incoming: LogEntry[]): LogEntry[] {
-  const bySequence = new Map<number, LogEntry>();
-  for (const entry of current) bySequence.set(entry.sequence, entry);
-  for (const entry of incoming) bySequence.set(entry.sequence, entry);
-  return [...bySequence.values()].sort((a, b) => a.sequence - b.sequence);
-}
-
-function formatUptime(uptimeMs: number | null): string {
-  if (uptimeMs === null) return "—";
-  const totalSeconds = Math.floor(uptimeMs / 1000);
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  return [hours, minutes, seconds].map((part) => String(part).padStart(2, "0")).join(":");
-}
-
-function actionEnabled(status: ProcessStatus, action: "start" | "stop" | "restart"): boolean {
-  if (status.state === "starting" || status.state === "stopping") return false;
-  if (action === "start") return status.state === "stopped" || status.state === "failed";
-  if (action === "stop") return status.state === "running";
-  return status.state === "running" || status.state === "stopped" || status.state === "failed";
-}
 
 export default function App() {
   const [servers, setServers] = useState<Record<string, ProcessStatus>>({});
@@ -35,6 +13,16 @@ export default function App() {
   const [connection, setConnection] = useState<ConnectionState>("connecting");
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const refreshServers = async () => {
+    try {
+      const result = await listServers();
+      setServers(Object.fromEntries(result.map((server) => [server.id, server])));
+      setSelectedId((current) => current ?? result[0]?.id ?? null);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
 
   const applyEvent = (event: StudioEvent) => {
     if (event.type === "snapshot") {
@@ -55,16 +43,6 @@ export default function App() {
     }
     if (event.type === "resync_required") {
       void refreshServers();
-    }
-  };
-
-  const refreshServers = async () => {
-    try {
-      const result = await listServers();
-      setServers(Object.fromEntries(result.map((server) => [server.id, server])));
-      setSelectedId((current) => current ?? result[0]?.id ?? null);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
     }
   };
 
