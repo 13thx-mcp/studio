@@ -5,6 +5,7 @@ use clap::Parser;
 use mcp_studio::{
     api::{self, AppState},
     config::StudioConfig,
+    discovery::DiscoveryService,
     logging,
     realtime::EventHub,
     registry::Registry,
@@ -32,12 +33,13 @@ async fn main() -> Result<()> {
     config.validate()?;
 
     let base_dir = std::env::current_dir()?;
+    let registry = Registry::open(&base_dir, &config.registry, &config.mcp)?;
     let supervisor = Arc::new(Supervisor::new(
-        Registry::new(config.mcp.clone()),
+        registry.clone(),
         config.log_capacity,
         Duration::from_millis(config.stop_timeout_ms),
-        base_dir.clone(),
     ));
+    let discovery = Arc::new(DiscoveryService::new(registry));
     let tunnel = Arc::new(TunnelSupervisor::new(
         config.tunnel.clone(),
         config.log_capacity,
@@ -50,13 +52,19 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(
         listen_addr = %addr,
-        managed_mcp_count = config.mcp.len(),
+        managed_mcp_count = supervisor.registry().ids().len(),
+        mcp_root = %supervisor.registry().canonical_root().display(),
         "starting MCP Studio"
     );
 
     let shutdown_supervisor = supervisor.clone();
     let shutdown_tunnel = tunnel.clone();
-    let app = api::router(AppState { supervisor, tunnel });
+    let app = api::router(AppState {
+        supervisor,
+        discovery,
+        tunnel,
+        registry_events: EventHub::default(),
+    });
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             shutdown_signal().await;
