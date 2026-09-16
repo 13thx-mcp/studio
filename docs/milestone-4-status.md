@@ -1,61 +1,65 @@
 # Milestone 4 Status — Registry, Configuration & Auto-Discovery
 
 - Target release: `v0.4.0`
-- Branch: `feature/registry-auto-discovery`
-- Status: Implementation complete; release verification pending
-- Date: 2026-09-16
+- Branch during implementation: `feature/registry-auto-discovery`
+- Status: COMPLETE — release verification passed
+- Date: 2026-09-17
+
+## Outcome
+
+Milestone 4 replaces Studio's compile-time/static MCP inventory with a safe, persistent, explicitly approved MCP registry and metadata-only discovery workflow.
+
+A supported MCP project below the configured MCP root can now be discovered, reviewed, registered, configured, enabled/disabled, supervised, and unregistered without changing Studio source code. Registration never starts a process automatically and unregister never deletes project source code.
 
 ## Implemented
 
 ### Persistent registry
 
-- Schema-versioned file-backed MCP registry.
+- Schema-versioned file-backed MCP registry (`schema_version = 1`).
 - Default local store: `data/registry.toml`.
-- One-time bootstrap from legacy `[mcp.*]` configuration when the persistent registry does not exist.
-- Deterministic `BTreeMap` server ordering/serialization.
+- One-time bootstrap from legacy `[mcp.*]` configuration when no registry exists.
+- Deterministic `BTreeMap` ordering/serialization.
 - Atomic sibling-temp write, file sync, rename, then in-memory publication.
-- Fail-safe load behavior for malformed or unsupported registry data.
+- Safe rejection of malformed or unsupported registry data.
 - Stable MCP ID validation and duplicate ID/project rejection.
 - Browser-safe registry views omit stored environment values.
 
-### Path/executable policy
+### Path and executable policy
 
-- Configured MCP root canonicalization.
-- Project-relative project, executable, and working-directory model.
-- Rejection of absolute paths and traversal/root/prefix components.
-- Rejection of symlink components.
-- Project confinement below MCP root.
-- Executable/working-directory confinement below registered project.
-- Revalidation immediately before spawn.
-- Structured argv only; no shell command representation or interpolation.
+- Configured MCP root is canonicalized.
+- Registered project, executable, and working directory use structured relative paths.
+- Absolute paths, traversal/root/prefix components, and symlink components are rejected.
+- Registered project must remain below the configured MCP root.
+- Executable and working directory must remain below the registered project.
+- Configuration is validated on mutation and again immediately before spawn.
+- Arguments remain a structured argv list; no shell command representation or interpolation is accepted.
 
 ### Discovery
 
-- Metadata-only direct-child scanning of configured MCP root.
+- Metadata-only direct-child scanning of the configured MCP root.
 - Rust detection through `Cargo.toml`.
 - Node detection through `package.json`.
 - Python detection through `pyproject.toml`.
-- Explicit exclusions for Studio, tunnel-client, gateway infrastructure, hidden directories, build/generated directories, and the nested infrastructure container.
-- Malformed/unreadable candidate isolation.
-- Discovery preview separate from registration.
-- Server-side rescan during approval.
-- Initial registration accepts only discovery-produced executable candidates.
-- Registration does not start the process.
+- Studio, tunnel-client, gateway infrastructure, hidden directories, and build/generated directories are ignored.
+- Plain directories without supported manifests are not candidates.
+- Malformed supported manifests are isolated as warnings instead of aborting the full scan.
+- Discovery preview is separate from registration.
+- Registration approval performs a server-side rescan and accepts only discovery-produced executable candidates.
+- Discovery does not build, import, install, run scripts, or execute project code.
 
 ### Dynamic runtime integration
 
 - Supervisor resolves configuration from the live registry rather than an immutable startup snapshot.
-- Lazy transient runtime state for newly registered MCPs.
-- Newly registered MCPs are immediately manageable without Studio restart.
-- Disabled MCP start/restart rejection.
-- Stop-first edit/disable/unregister semantics.
-- Inactive runtime state removal after unregister.
-- Unregister never deletes project source code.
-- Studio shutdown enumerates the current registry and stops Studio-owned active MCPs.
+- Newly registered MCPs are immediately manageable without restarting Studio.
+- Transient runtime state is created lazily.
+- Disabled MCPs cannot start or restart.
+- Edit, disable, and unregister require the MCP to be inactive.
+- Unregister removes only Studio registration and inactive runtime state.
+- Studio shutdown still stops Studio-owned active MCP processes.
 
-### REST/realtime
+### REST and realtime
 
-Added registry endpoints:
+Registry API:
 
 ```text
 GET    /api/registry
@@ -66,7 +70,7 @@ POST   /api/registry/{id}/enable
 POST   /api/registry/{id}/disable
 ```
 
-Added discovery endpoints:
+Discovery API:
 
 ```text
 GET  /api/discovery
@@ -76,7 +80,7 @@ POST /api/discovery/{candidate_id}/register
 
 Registry/discovery mutations use the existing browser same-origin protection.
 
-Added typed realtime invalidations:
+Typed realtime invalidations:
 
 ```text
 registry_changed
@@ -87,51 +91,143 @@ Operational reconnect snapshots remain focused on MCP/tunnel runtime state; clie
 
 ### Dashboard
 
-- Persistent Registry panel.
-- Discovery panel with explicit scan/review/register flow.
-- Display of ID, name, runtime, project path, executable, working directory, enabled state, and current runtime state.
-- Safe structured configuration editing.
-- Enable/disable controls.
-- Stop-first UI disabling for edit/disable/unregister while active.
+- Registry panel with safe structured configuration editing.
+- Discovery scan/review/register workflow.
+- ID, display name, runtime, project path, executable, working directory, enabled state, and runtime state display.
+- Enable/disable and unregister controls.
+- Active-process mutation controls are disabled until stopped.
 - Unregister confirmation explicitly states that source files are not deleted.
 - Disabled MCP lifecycle controls are unavailable.
-- Existing MCP/tunnel lifecycle/log workflows retained.
-- No environment/secret fields are rendered.
+- Existing MCP/tunnel lifecycle and log workflows remain available.
+- No environment or secret fields are rendered.
 
-## Automated coverage added
+## Automated verification
 
-### Registry/discovery backend
+Rust release gates passed:
 
-- deterministic persistence round-trip;
-- unsupported schema rejection;
-- browser-safe public view excludes environment values;
-- traversal rejection;
-- Rust/Node/Python metadata detection;
-- malformed manifest isolation;
-- known infrastructure ignores;
-- discovery → approval → registration;
-- edit/disable persistence across registry reopen;
-- unregister persistence across reopen;
-- source preservation after unregister;
-- duplicate project rejection;
-- executable traversal rejection;
-- symlink executable escape rejection.
+```text
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets --all-features
+cargo build --all-targets --all-features
+cargo audit
+cargo build --release --locked
+```
 
-### Runtime/API
+The final targeted rerun additionally passed:
 
-- MCP lifecycle fixtures now run project-confined local executable copies rather than arbitrary host executables;
-- disabled MCP cannot start;
-- existing start/stop/restart/crash/shutdown coverage retained;
-- cross-origin registry mutation rejection added.
+- 24/24 library unit tests.
+- 4/4 registry/discovery integration tests.
+- 7/7 supervisor lifecycle integration tests.
+- 7/7 tunnel lifecycle integration tests.
+- supervisor lifecycle repeated 5 consecutive runs with no failure.
+- registry/discovery repeated 5 consecutive runs with no failure.
 
-### Frontend
+Frontend release gates passed:
 
-- structured registry edit request coverage;
-- enable/disable and unregister endpoint coverage;
-- scan and registration verified as separate operations;
-- request bodies contain structured executable/working-dir/args fields rather than shell command fields.
+```text
+pnpm install
+pnpm lint
+pnpm typecheck
+pnpm test
+pnpm build
+```
 
-## Architecture/security documentation
+Frontend result: 4 test files, 12 tests passed, production Vite build succeeded.
+
+## Real-workspace smoke verification
+
+The real smoke used an isolated Studio instance on port `18104` and an isolated registry under `issues/m4-smoke/`, leaving normal Studio registry state untouched.
+
+Verified discovery:
+
+```text
+Blender     detected as Rust
+Filesystem  detected as Rust
+Git         detected as Rust
+Studio      ignored
+tunnel-client ignored
+gateway     ignored
+```
+
+Verified real Filesystem MCP workflow:
+
+```text
+discover
+→ explicit register
+→ remains stopped
+→ configure structured args
+→ start
+→ running
+→ stop
+→ stopped
+→ restart Studio
+→ registration/config persisted
+```
+
+Verified enable/disable persistence:
+
+```text
+disable
+→ start rejected with HTTP 409
+→ restart Studio
+→ still disabled
+→ enable
+→ start succeeds
+→ stop succeeds
+```
+
+Verified WebSocket behavior:
+
+- initial snapshot received;
+- reconnect snapshot received.
+
+Verified real tunnel regression:
+
+```text
+stopped
+→ start / running PID
+→ restart / new running PID / restart_count = 1
+→ stop / stopped / PID cleared
+```
+
+Verified unregister/source preservation:
+
+```text
+unregister
+→ registry lookup returns 404
+→ Filesystem Cargo.toml SHA-256 unchanged
+→ restart Studio
+→ registry lookup still returns 404
+```
+
+Final isolated registry after unregister contained schema v1 with no registered servers.
+
+Result:
+
+```text
+M4 real-workspace smoke: PASS
+```
+
+## Security review
+
+`docs/threat-model.md` covers active M4 threats and controls including:
+
+- malicious project manifests;
+- path traversal and symlink escape;
+- executable-path and argument abuse;
+- environment/secret leakage;
+- registry file tampering and malformed persisted state;
+- unauthorized registration/config mutations;
+- discovery-triggered execution risk;
+- unregister/delete confusion;
+- running-process configuration mutation;
+- validation/spawn TOCTOU;
+- duplicate/stale registry entries.
+
+No known Critical or High severity M4 finding remains unresolved at release closure.
+
+## Architecture records
 
 Created:
 
@@ -143,128 +239,34 @@ Updated:
 
 - `docs/architecture.md`
 - `docs/threat-model.md`
+- `README.md`
+- `CHANGELOG.md`
 - `studio.example.toml`
 
-The threat model now actively covers malicious manifests, traversal, symlink escape, executable/argument abuse, environment leakage, registry tampering, malformed persistence, unauthorized mutations, running-state config mutation, TOCTOU, duplicate/stale registry entries, and unregister/delete confusion.
+## Scope exclusions preserved
 
-## Verification state
+M4 does not introduce:
 
-The implementation has been written and committed, but the full M4 release gates have **not yet been executed in this session** because the connected workspace interface provides repository/file/Git actions but no command-execution action.
+- SQLite;
+- historical runtime/tunnel sessions;
+- persisted metrics or audit-event history;
+- automatic restart/backoff or crash-loop circuit breaking;
+- gateway request/latency telemetry;
+- remote authentication/RBAC/public Studio exposure;
+- generic tunnel plugin architecture.
 
-Therefore M4 must not yet be marked released, merged to `main`, or tagged `v0.4.0`.
+## Known limitation
 
-### Required Rust gates
+M4 deliberately does not expose generic browser editing of MCP environment variables or secrets. Legacy server-side environment values may be preserved by bootstrap but are omitted from browser-visible registry DTOs. A generalized secret-reference model requires a separate security design.
 
-Run from `mcp-server/studio`:
+## Release closure
 
-```bash
-cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets --all-features
-cargo build --all-targets --all-features
-cargo audit
-cargo build --release --locked
-```
+All functional, automated, security-review, and real-workspace smoke prerequisites for the M4 release have passed. Release closure proceeds with:
 
-Also repeat race/filesystem-sensitive coverage, for example:
-
-```bash
-for i in 1 2 3 4 5; do cargo test --test registry_discovery || exit 1; done
-```
-
-### Required frontend gates
-
-```bash
-cd web
-pnpm install
-pnpm lint
-pnpm typecheck
-pnpm test
-pnpm build
-```
-
-## Required real-workspace smoke
-
-Start Studio with an isolated M4 smoke registry path so normal operator state is not modified.
-
-Verify discovery at minimum:
-
-```text
-Blender      detected as Rust
-Filesystem   detected as Rust
-Git          inspected/detected as Rust
-Studio       ignored
-tunnel-client ignored
-gateway      ignored
-```
-
-Then use one real stopped candidate that is not already registered:
-
-```text
-discover
-→ review
-→ register
-→ appears in registry
-→ remains stopped
-→ start
-→ running
-→ stop
-→ stopped
-→ restart Studio
-→ registration and configuration remain present
-```
-
-Enable/disable:
-
-```text
-disable
-→ start rejected/unavailable
-→ restart Studio
-→ still disabled
-→ enable
-→ start succeeds
-```
-
-Unregister:
-
-```text
-stop
-→ unregister
-→ removed from registry
-→ source tree remains untouched
-→ restart Studio
-→ remains unregistered
-```
-
-Regression smoke:
-
-- existing MCP lifecycle;
-- tunnel start/stop/restart;
-- WebSocket reconnect/resync;
-- Studio graceful shutdown cleanup.
-
-## Release closure checklist
-
-Do not close M4 until all are true:
-
-- [ ] Rust gates pass.
-- [ ] Frontend gates pass.
-- [ ] Repeated registry/discovery test passes.
-- [ ] Real Blender/Filesystem discovery smoke passes.
-- [ ] Real registration/start/stop/restart-persistence smoke passes.
-- [ ] Enable/disable persistence smoke passes.
-- [ ] Unregister/source-preservation smoke passes.
-- [ ] Existing MCP lifecycle regression smoke passes.
-- [ ] Existing tunnel lifecycle regression smoke passes.
-- [ ] WebSocket reconnect/resync regression passes.
-- [ ] Threat-model review has no unresolved Critical/High issue.
-- [ ] Dev-git-control readiness passes.
-- [ ] Release-prep version/changelog changes are committed exactly as `chore(release): prepare v0.4.0`.
-- [ ] Feature branch is reconciled with current `main` and clean.
-- [ ] `--no-ff` merge is performed through Git MCP.
-- [ ] Annotated `v0.4.0` tag points to the M4 merge commit.
-- [ ] Feature branch is deleted and final `main` is clean.
-
-## Current known limitation
-
-M4 deliberately does not provide generic browser editing of MCP environment variables or secrets. Legacy server-side environment values can be preserved through bootstrap but are omitted from browser-visible registry DTOs. A generalized secret-reference schema should be designed separately rather than exposing raw stored values.
+1. exact final branch commit: `chore(release): prepare v0.4.0`;
+2. dev-git-control readiness check;
+3. switch to `main`;
+4. `--no-ff` merge through Git MCP;
+5. annotated `v0.4.0` tag;
+6. delete `feature/registry-auto-discovery`;
+7. verify clean `main`, tag target, and merge history.

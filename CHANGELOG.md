@@ -4,6 +4,88 @@ All notable changes to MCP Studio will be documented here.
 
 The project follows Semantic Versioning once public/pre-release artifacts begin.
 
+## [0.4.0] - 2026-09-17
+
+### Milestone
+
+- Milestone 4 — Registry, Configuration & Auto-Discovery — completed and closed.
+
+### Added
+
+- Schema-versioned persistent MCP registry backed by `data/registry.toml` by default.
+- Atomic registry persistence using sibling temporary files, file sync, rename, and fail-safe publication.
+- Deterministic one-time bootstrap from legacy `[mcp.*]` configuration when no persistent registry exists.
+- Configurable canonicalized MCP root and project-relative registered launch configuration.
+- Metadata-only discovery for Rust (`Cargo.toml`), Node (`package.json`), and Python (`pyproject.toml`) projects.
+- Explicit discovery preview and operator approval before registration.
+- Dynamic registration without Studio source changes or restart.
+- Registry edit, enable/disable, and unregister operations.
+- Stop-first conflict semantics for edit, disable, and unregister while a process is active.
+- Dynamic supervisor integration with lazy runtime state for newly registered MCPs.
+- Registry REST API and discovery REST API.
+- Typed `registry_changed` and `discovery_changed` realtime invalidation events.
+- Registry and Discovery dashboard sections.
+- Backend coverage for persistence, restart survival, duplicate project rejection, malformed manifests, traversal, symlink escape, disabled-start rejection, and source preservation.
+- Frontend registry/discovery request tests.
+- ADR 0004 for file-backed registry/path confinement policy.
+- ADR 0005 for live registry/supervisor reconciliation and discovery approval model.
+- Milestone 4 design and closure documentation.
+
+### Changed
+
+- MCP Supervisor now reads from a live persistent registry instead of an immutable startup-only static map.
+- Browser-safe registry DTOs expose structured launch metadata but omit stored environment values.
+- Registered executable and working-directory paths are validated on mutation and again immediately before spawn.
+- Discovery ignores infrastructure/build/generated/plain directories that are not supported MCP projects.
+- Rust/Python discovery uses document TOML decoding and malformed supported manifests are isolated as warnings.
+- Supervisor lifecycle test fixtures now use project-local executable scripts with collision-safe temporary paths.
+- README, architecture, threat model, example configuration, and package versions updated for M4.
+- Rust and frontend package versions advanced to `0.4.0`.
+
+### Verified
+
+- `cargo fmt --all -- --check`
+- `cargo clippy --all-targets --all-features -- -D warnings`
+- `cargo test --all-targets --all-features`
+- `cargo build --all-targets --all-features`
+- `cargo audit`
+- `cargo build --release --locked`
+- 24/24 Rust library unit tests passed.
+- 4/4 registry/discovery integration tests passed.
+- 7/7 supervisor lifecycle integration tests passed.
+- 7/7 tunnel lifecycle regression tests passed.
+- Supervisor lifecycle integration test repeated 5 times without failure.
+- Registry/discovery integration test repeated 5 times without failure.
+- `pnpm install`
+- `pnpm lint`
+- `pnpm typecheck`
+- `pnpm test` — 4 test files / 12 tests passed.
+- `pnpm build`
+- Real workspace discovery detected Blender, Filesystem, and Git while ignoring Studio, tunnel-client, and gateway.
+- Real Filesystem discovery → approval → registration → stopped → start → stop workflow passed.
+- Registry configuration survived Studio restart.
+- Disabled state survived Studio restart and start was rejected with HTTP 409 while disabled.
+- Enable → start → stop passed after disabled-state recovery.
+- WebSocket initial and reconnect snapshots passed.
+- Real tunnel start → restart → stop regression passed with PID/state/restart-count checks.
+- Unregister returned 404 afterward and remained absent after Studio restart.
+- Filesystem source hash was unchanged before/after unregister.
+
+### Security
+
+- Discovery is metadata-only and does not execute, import, install, build, or run discovered project code.
+- Registration requires an explicit operator action and never starts the MCP automatically.
+- Absolute, traversal, prefix/root, and symlink-component execution paths are rejected.
+- Executable and working-directory resolution is confined below the registered project and configured MCP root.
+- Launch arguments remain structured argv and are never shell-interpolated.
+- Browser registry responses/events omit stored environment values.
+- Registry/discovery mutations retain same-origin browser protection.
+- Disabled MCPs cannot start/restart.
+- Edit/disable/unregister cannot mutate active processes silently.
+- Unregister removes Studio registration only and never deletes project source code.
+- Tunnel lifecycle remains a separate constrained domain and was regression-tested unchanged.
+- Studio remains loopback-only.
+
 ## [0.3.0] - 2026-09-16
 
 ### Milestone

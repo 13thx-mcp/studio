@@ -4,11 +4,9 @@ Local-first web control plane for safely discovering, registering, configuring, 
 
 ## Current status
 
-Milestone 4 — Registry, Configuration & Auto-Discovery is implemented on `feature/registry-auto-discovery` and is awaiting its required Rust/frontend/manual smoke gates before release as `v0.4.0`.
+Milestone 4 — Registry, Configuration & Auto-Discovery is complete and released as `v0.4.0`.
 
-The last released version remains `v0.3.0` until those gates pass and the required release-prep/merge/tag workflow is completed.
-
-Current M4 capabilities include:
+Current capabilities include:
 
 - schema-versioned persistent MCP registry;
 - atomic file-backed registry writes at `data/registry.toml` by default;
@@ -108,7 +106,7 @@ Discovery never runs:
 - project executables;
 - shell commands.
 
-Known infrastructure/build locations such as Studio itself, tunnel-client, gateway, hidden directories, target/build output, and common generated directories are ignored.
+Known infrastructure/build locations such as Studio itself, tunnel-client, gateway, hidden directories, target/build output, and common generated directories are ignored. Plain directories without a supported manifest are not shown as candidates.
 
 A discovery result is only a preview. Registration requires a separate explicit operator action, the server rescans the candidate, and registration leaves the MCP stopped.
 
@@ -299,13 +297,13 @@ pnpm test
 pnpm build
 ```
 
-M4 release additionally requires real-workspace discovery/registration/persistence/enable-disable/unregister smoke tests and M1–M3 lifecycle/tunnel/WebSocket regression smoke tests. See `docs/milestone-4-status.md`.
+The M4 release gate also passed real-workspace discovery/registration/persistence/enable-disable/unregister smoke tests, WebSocket reconnect verification, source-preservation verification, and real tunnel lifecycle regression. See `docs/milestone-4-status.md`.
 
 ## Engineering documents
 
 - `ROADMAP.md` — long-term milestone plan.
 - `docs/milestone-4-design.md` — M4 design contract.
-- `docs/milestone-4-status.md` — implementation and release-gate status.
+- `docs/milestone-4-status.md` — completed M4 verification and closure evidence.
 - `docs/architecture.md` — current component/runtime architecture.
 - `docs/threat-model.md` — active security model.
 - `docs/adr/0004-file-backed-mcp-registry.md` — persistence/path policy.
