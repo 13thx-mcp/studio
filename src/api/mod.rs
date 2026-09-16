@@ -169,7 +169,9 @@ async fn websocket(
     ws: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
     ensure_same_origin(&headers)?;
-    Ok(ws.on_upgrade(move |socket| websocket_session(socket, state)).into_response())
+    Ok(ws
+        .on_upgrade(move |socket| websocket_session(socket, state))
+        .into_response())
 }
 
 async fn websocket_session(mut socket: WebSocket, state: AppState) {
@@ -223,7 +225,10 @@ async fn send_snapshot(socket: &mut WebSocket, state: &AppState) -> Result<(), (
 
 async fn send_event(socket: &mut WebSocket, event: &StudioEvent) -> Result<(), ()> {
     let payload = serde_json::to_string(event).map_err(|_| ())?;
-    socket.send(Message::Text(payload.into())).await.map_err(|_| ())
+    socket
+        .send(Message::Text(payload.into()))
+        .await
+        .map_err(|_| ())
 }
 
 fn ensure_same_origin(headers: &HeaderMap) -> Result<(), ApiError> {
@@ -231,7 +236,9 @@ fn ensure_same_origin(headers: &HeaderMap) -> Result<(), ApiError> {
         return Ok(());
     };
     let Some(host) = headers.get(axum::http::header::HOST) else {
-        return Err(ApiError::forbidden("missing Host header for browser request"));
+        return Err(ApiError::forbidden(
+            "missing Host header for browser request",
+        ));
     };
 
     let origin = origin

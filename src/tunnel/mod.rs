@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
     process::Command,
-    sync::{broadcast, Mutex},
+    sync::{Mutex, broadcast},
     time::{sleep, timeout},
 };
 
@@ -625,13 +625,7 @@ fn redact_message(input: &str, secrets: &[String]) -> String {
         }
     }
 
-    for key in [
-        "token",
-        "secret",
-        "password",
-        "credential",
-        "authorization",
-    ] {
+    for key in ["token", "secret", "password", "credential", "authorization"] {
         value = redact_named_field(value, key);
     }
     value
@@ -651,9 +645,7 @@ fn redact_named_field(mut value: String, key: &str) -> String {
         let mut cursor = key_start + key.len();
         let bytes = value.as_bytes();
 
-        while cursor < bytes.len()
-            && matches!(bytes[cursor], b' ' | b'\t' | b'\'' | b'"')
-        {
+        while cursor < bytes.len() && matches!(bytes[cursor], b' ' | b'\t' | b'\'' | b'"') {
             cursor += 1;
         }
         if cursor >= bytes.len() || !matches!(bytes[cursor], b'=' | b':') {
@@ -666,7 +658,10 @@ fn redact_named_field(mut value: String, key: &str) -> String {
         }
 
         let value_start = cursor;
-        let quote = bytes.get(value_start).copied().filter(|byte| matches!(byte, b'\'' | b'"'));
+        let quote = bytes
+            .get(value_start)
+            .copied()
+            .filter(|byte| matches!(byte, b'\'' | b'"'));
         let content_start = value_start + usize::from(quote.is_some());
         let content_end = if let Some(quote) = quote {
             value[content_start..]
@@ -732,7 +727,7 @@ fn spawn_log_reader<R>(
 #[cfg(unix)]
 fn send_terminate(pid: u32) -> StudioResult<()> {
     use nix::{
-        sys::signal::{kill, Signal},
+        sys::signal::{Signal, kill},
         unistd::Pid,
     };
 
@@ -744,13 +739,12 @@ fn send_terminate(pid: u32) -> StudioResult<()> {
 #[cfg(unix)]
 fn send_kill(pid: u32) -> StudioResult<()> {
     use nix::{
-        sys::signal::{kill, Signal},
+        sys::signal::{Signal, kill},
         unistd::Pid,
     };
 
-    kill(Pid::from_raw(pid as i32), Signal::SIGKILL).map_err(|error| {
-        StudioError::Process(format!("failed to kill tunnel PID {pid}: {error}"))
-    })
+    kill(Pid::from_raw(pid as i32), Signal::SIGKILL)
+        .map_err(|error| StudioError::Process(format!("failed to kill tunnel PID {pid}: {error}")))
 }
 
 #[cfg(not(unix))]

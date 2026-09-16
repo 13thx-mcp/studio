@@ -159,7 +159,9 @@ impl StudioConfig {
                 ));
             }
             match reference {
-                crate::tunnel::SecretReference::FromEnv { from_env } if from_env.trim().is_empty() => {
+                crate::tunnel::SecretReference::FromEnv { from_env }
+                    if from_env.trim().is_empty() =>
+                {
                     return Err(StudioError::Config(format!(
                         "tunnel secret reference for {key} has an empty from_env"
                     )));
