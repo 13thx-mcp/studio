@@ -2,7 +2,7 @@
 
 ## Status
 
-**IN IMPLEMENTATION — code-complete baseline pending final browser smoke test and release gates.**
+**FINAL VERIFICATION — all automated release gates pass; manual browser smoke test remains before formal closure.**
 
 Target version: `v0.2.0`
 
@@ -17,7 +17,7 @@ Target version: `v0.2.0`
 - Process lifecycle transitions publish `process_status` events.
 - stdout/stderr/Studio log entries publish `log` events.
 - Lagged WebSocket receivers receive `resync_required` followed by a fresh snapshot.
-- Log entries now include a monotonic per-MCP sequence number for REST/WebSocket deduplication.
+- Log entries include a monotonic per-MCP sequence number for REST/WebSocket deduplication.
 
 ### Browser security boundary
 
@@ -33,7 +33,7 @@ Target version: `v0.2.0`
 - Managed/running/failed/restart summary.
 - MCP server list and selected-server detail view.
 - Start / stop / restart controls derived from process state.
-- PID, uptime, restart count, crash count, last exit, and last error display.
+- PID, live uptime, restart count, crash count, last exit, and last error display.
 - WebSocket connection status.
 - Automatic reconnect using bounded exponential backoff.
 - Initial REST synchronization plus WebSocket runtime updates.
@@ -51,42 +51,9 @@ Target version: `v0.2.0`
 - SPA fallback serves `web/dist/index.html`.
 - Vite development proxy forwards API and WebSocket traffic to `127.0.0.1:18100`.
 
-## Automated Verification Completed So Far
+## Automated Verification
 
-Rust baseline previously passed after the M2 realtime foundation changes:
-
-```text
-cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets --all-features
-cargo build --all-targets --all-features
-```
-
-Observed Rust tests at that point:
-
-- API/config/realtime library tests: 6 passed.
-- Supervisor lifecycle integration tests: 7 passed.
-- Total observed: 13 passed; 0 failed.
-
-Frontend verification after dependency/toolchain stabilization:
-
-```text
-pnpm install
-pnpm lint
-pnpm typecheck
-pnpm test
-pnpm build
-```
-
-Observed frontend tests before the final UX additions:
-
-- Vitest: 3 passed; 0 failed.
-
-Additional reconnect/backoff coverage has since been added and must be included in the final gate rerun.
-
-## Required Final Verification
-
-Before closing Milestone 2, rerun the complete final gates from the current branch:
+The complete final automated release gates passed from the current Milestone 2 source state.
 
 ### Rust
 
@@ -99,6 +66,8 @@ cargo audit
 cargo build --release --locked
 ```
 
+Result: **PASS**.
+
 ### Frontend
 
 ```bash
@@ -110,9 +79,13 @@ pnpm test
 pnpm build
 ```
 
+Result: **PASS**.
+
+Frontend verification includes state-helper tests and reconnect/backoff coverage.
+
 ## Manual Browser Smoke Test
 
-Use a real Filesystem MCP instance and verify through the dashboard:
+The remaining release gate is a real browser smoke test with the Filesystem MCP:
 
 1. Build `web/dist`.
 2. Start Studio from `mcp-server/studio` with a valid config.
@@ -139,12 +112,12 @@ Milestone 2 can be marked complete when:
 - Browser refresh and WebSocket reconnect reconcile to backend state.
 - UI does not expose MCP environment secret values.
 - Same-origin protection remains enforced for browser mutation and WebSocket paths.
-- Rust quality gates pass from the final source state.
-- Frontend quality gates pass from the final source state.
-- `cargo audit` passes or any advisory is explicitly reviewed and accepted.
-- Release build succeeds with `--locked`.
-- Manual browser smoke test succeeds with a real managed MCP.
-- Version and changelog are advanced to `0.2.0` only after verification.
+- Rust quality gates pass from the final source state. **PASS**
+- Frontend quality gates pass from the final source state. **PASS**
+- `cargo audit` passes. **PASS**
+- Release build succeeds with `--locked`. **PASS**
+- Manual browser smoke test succeeds with a real managed MCP. **PENDING**
+- Version and changelog are advanced to `0.2.0` only after manual verification.
 
 ## Out of Scope
 
@@ -159,4 +132,4 @@ Still deferred beyond Milestone 2:
 
 ## Closure State
 
-Milestone 2 is **not yet formally closed**. Implementation is at the final verification stage.
+Milestone 2 implementation and automated verification are complete. Formal milestone closure is pending only the manual browser smoke test and the resulting `0.2.0` release metadata update.
