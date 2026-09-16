@@ -5,6 +5,7 @@ use std::{
     fs,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -14,6 +15,8 @@ use mcp_studio::{
     registry::Registry,
     supervisor::{ProcessState, Supervisor},
 };
+
+static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 struct Fixture {
     supervisor: Supervisor,
@@ -27,31 +30,35 @@ impl Drop for Fixture {
 }
 
 fn temp_root(name: &str) -> PathBuf {
+    let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!(
-        "mcp-studio-supervisor-{name}-{}-{}",
+        "mcp-studio-supervisor-{name}-{}-{}-{sequence}",
         std::process::id(),
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
     ));
     fs::create_dir_all(&path).unwrap();
     path
 }
 
-fn local_executable(project: &Path, source: &str, name: &str) -> PathBuf {
+fn local_script(project: &Path, body: &str, name: &str) -> PathBuf {
     let bin = project.join("bin");
     fs::create_dir_all(&bin).unwrap();
     let destination = bin.join(name);
-    fs::copy(source, &destination).unwrap();
+    fs::write(&destination, format!("#!/bin/sh\n{body}\n")).unwrap();
     let mut permissions = fs::metadata(&destination).unwrap().permissions();
     permissions.set_mode(0o755);
     fs::set_permissions(&destination, permissions).unwrap();
     destination
 }
 
-fn supervisor_with(id: &str, source_command: &str, args: &[&str]) -> Fixture {
+fn supervisor_with(id: &str, script_body: &str, args: &[&str]) -> Fixture {
     let root = temp_root(id);
     let project = root.join(id);
     fs::create_dir_all(&project).unwrap();
-    let command = local_executable(&project, source_command, "fixture-bin");
+    let command = local_script(&project, script_body, "fixture-bin");
     let server = McpServerConfig {
         name: id.to_owned(),
         command,
@@ -89,7 +96,7 @@ async fn wait_for_state(supervisor: &Supervisor, id: &str, expected: ProcessStat
 
 #[tokio::test]
 async fn starts_and_stops_process() {
-    let fixture = supervisor_with("fixture", "/bin/sleep", &["30"]);
+    let fixture = supervisor_with("fixture", "exec /bin/sleep \"$@\"", &["30"]);
     let supervisor = &fixture.supervisor;
 
     let started = supervisor.start("fixture").await.unwrap();
@@ -103,7 +110,7 @@ async fn starts_and_stops_process() {
 
 #[tokio::test]
 async fn restart_replaces_process_and_increments_counter() {
-    let fixture = supervisor_with("fixture", "/bin/sleep", &["30"]);
+    let fixture = supervisor_with("fixture", "exec /bin/sleep \"$@\"", &["30"]);
     let supervisor = &fixture.supervisor;
 
     let first = supervisor.start("fixture").await.unwrap();
@@ -119,7 +126,7 @@ async fn restart_replaces_process_and_increments_counter() {
 
 #[tokio::test]
 async fn detects_unexpected_nonzero_exit() {
-    let fixture = supervisor_with("fixture", "/bin/sh", &["-c", "exit 7"]);
+    let fixture = supervisor_with("fixture", "exit 7", &[]);
     let supervisor = &fixture.supervisor;
 
     supervisor.start("fixture").await.unwrap();
@@ -132,7 +139,7 @@ async fn detects_unexpected_nonzero_exit() {
 
 #[tokio::test]
 async fn rejects_duplicate_start() {
-    let fixture = supervisor_with("fixture", "/bin/sleep", &["30"]);
+    let fixture = supervisor_with("fixture", "exec /bin/sleep \"$@\"", &["30"]);
     let supervisor = &fixture.supervisor;
 
     supervisor.start("fixture").await.unwrap();
@@ -144,14 +151,14 @@ async fn rejects_duplicate_start() {
 
 #[tokio::test]
 async fn rejects_stop_when_already_stopped() {
-    let fixture = supervisor_with("fixture", "/bin/sleep", &["30"]);
+    let fixture = supervisor_with("fixture", "exec /bin/sleep \"$@\"", &["30"]);
     let error = fixture.supervisor.stop("fixture").await.unwrap_err();
     assert!(matches!(error, StudioError::NotRunning(_)));
 }
 
 #[tokio::test]
 async fn disabled_mcp_cannot_start() {
-    let fixture = supervisor_with("fixture", "/bin/sleep", &["30"]);
+    let fixture = supervisor_with("fixture", "exec /bin/sleep \"$@\"", &["30"]);
     fixture
         .supervisor
         .registry()
@@ -163,7 +170,7 @@ async fn disabled_mcp_cannot_start() {
 
 #[tokio::test]
 async fn shutdown_all_stops_owned_processes() {
-    let fixture = supervisor_with("fixture", "/bin/sleep", &["30"]);
+    let fixture = supervisor_with("fixture", "exec /bin/sleep \"$@\"", &["30"]);
     let supervisor = &fixture.supervisor;
 
     supervisor.start("fixture").await.unwrap();

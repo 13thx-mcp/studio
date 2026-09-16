@@ -4,24 +4,24 @@
 
 MCP Studio is a local-first control plane for MCP servers and the existing secure tunnel runtime under `mcp-server/`.
 
-## Current boundary — Milestone 3
+## Current boundary — Milestone 4
 
-Milestone 3 extends the completed MCP process supervisor and Milestone 2 browser dashboard with one separately supervised secure tunnel runtime.
+Milestone 4 extends the completed MCP supervisor, browser dashboard, and secure tunnel manager with a persistent MCP registry and metadata-only project discovery.
 
-Current managed MCP servers remain statically configured. The managed tunnel is the existing `mcp-server/tunnel-client/tunnel-client-runtime-cloudflared` bundle using its existing YAML configuration. Persistent discovery/registry, historical metrics, SQLite persistence, remote authentication, auto-restart/backoff, and MCP gateway request telemetry remain outside this milestone.
+Registry/configuration persistence is intentionally file-backed in M4. SQLite, runtime/session history, persisted metrics/events/audit history, automatic restart/backoff, remote authentication, and MCP gateway traffic telemetry remain later milestones.
 
 ## Components
 
-- `api`: HTTP, WebSocket, browser-origin validation, SPA/static-file boundary.
-- `config`: typed TOML configuration and validation.
-- `registry`: static in-memory MCP definitions loaded from configuration.
-- `supervisor`: MCP child-process lifecycle, runtime state, PID ownership, log capture, event publication, and shutdown cleanup.
-- `tunnel`: tunnel configuration, lifecycle supervisor, PID ownership, secret resolution/redaction, log capture, and shutdown cleanup.
-- `realtime`: typed runtime event model and bounded Tokio broadcast abstraction.
-- `web`: React + TypeScript + Vite dashboard.
-- `discovery`: reserved for Milestone 4.
-- `metrics`: reserved for historical/request metrics in later milestones.
-- `storage`: reserved for persistent state in Milestone 5.
+- `api`: HTTP/WebSocket API, same-origin mutation protection, SPA/static-file boundary.
+- `config`: typed bootstrap/runtime configuration and validation.
+- `registry`: schema-versioned persistent MCP registry, atomic writes, ID/path validation, and browser-safe views.
+- `discovery`: metadata-only direct-child scanning of supported Rust, Node, and Python project manifests.
+- `supervisor`: MCP child-process lifecycle, transient runtime state, PID ownership, log capture, event publication, and shutdown cleanup.
+- `tunnel`: independent tunnel configuration/lifecycle/secret-redaction domain.
+- `realtime`: typed bounded event streams and registry/discovery invalidation events.
+- `web`: React + TypeScript + Vite operational dashboard plus Registry/Discovery management.
+- `metrics`: reserved for later historical/request metrics.
+- `storage`: reserved for SQLite-backed Milestone 5 persistence.
 - `logging`: structured logging initialization.
 - `error`: shared typed error boundary.
 
@@ -32,25 +32,114 @@ Browser
    |
    | same-origin HTTP / WebSocket
    v
-+-----------------------------------------------------------+
-| MCP Studio / Axum                                         |
-|                                                           |
-|  REST API ------+--> MCP Supervisor ----> managed MCP     |
-|                 |                                         |
-|                 +--> Tunnel Supervisor --> tunnel runtime |
-|                                                           |
-|  WebSocket <----+---- typed MCP event stream              |
-|                 +---- typed tunnel event stream           |
-|                                                           |
-|  Static React/Vite dashboard                              |
-+-----------------------------------------------------------+
++-----------------------------------------------------------------+
+| MCP Studio / Axum                                               |
+|                                                                 |
+| Registry/Discovery REST ---> Registry <----> data/registry.toml |
+|                                 |                               |
+| MCP lifecycle REST ------------+----> MCP Supervisor ---> MCP   |
+|                                                                 |
+| Tunnel lifecycle REST ----------------> Tunnel Supervisor       |
+|                                                                 |
+| WebSocket <--- process/tunnel events + registry invalidations   |
+| React/Vite dashboard                                            |
++-----------------------------------------------------------------+
+                |
+                +---- metadata-only scan ----> configured MCP root
 ```
 
-The WebSocket endpoint multiplexes the bounded MCP and tunnel event receivers into one existing Studio WebSocket contract. This keeps the lifecycle domains independent while preserving one browser realtime channel.
+`DiscoveredProject`, persistent `RegisteredMcp`, and transient `ProcessStatus` are separate models.
 
-## Lifecycle domains
+## Persistent registry
 
-MCP and tunnel lifecycle state machines intentionally use the same state vocabulary but separate supervisor types and runtime state.
+M4 uses a versioned TOML registry, defaulting to:
+
+```text
+data/registry.toml
+```
+
+The registry owns:
+
+- schema version;
+- configured MCP-root identity;
+- stable server IDs;
+- display name and enabled state;
+- project/runtime metadata;
+- structured project-relative executable and working-directory paths;
+- structured argument arrays;
+- inherited server-side environment values where legacy configuration requires them.
+
+Browser DTOs omit environment values.
+
+Writes are complete-document copy-on-write updates:
+
+```text
+validate candidate state
+→ deterministic serialize
+→ write sibling temp file
+→ fsync temp file
+→ atomic rename
+→ publish candidate as live in-memory state
+```
+
+Malformed or unsupported existing registry files fail startup and are never silently overwritten.
+
+When no registry exists, existing `[mcp.*]` configuration is converted once into schema-v1 records. Once the persistent registry exists it is authoritative.
+
+## MCP-root and executable policy
+
+The configured MCP root is canonicalized when the registry opens.
+
+Persistent MCP records store:
+
+- project path relative to MCP root;
+- executable path relative to the registered project;
+- working directory relative to the registered project;
+- arguments as an explicit list.
+
+Studio rejects absolute paths, `..`, root/prefix escapes, and symlink components in project/working-directory/executable paths. The project must remain under the configured MCP root; working directory and executable must remain under that project.
+
+The executable policy is validated on mutation and validated again immediately before spawn. The executable must be a regular file at activation time.
+
+There is no raw shell-command representation and no shell interpolation.
+
+## Discovery
+
+M4 discovery scans direct child directories of the configured MCP root. It never invokes project code, package managers, compilers, interpreters, install hooks, shell commands, or imports.
+
+Supported metadata:
+
+- Rust: `Cargo.toml` package/default-run/bin metadata.
+- Node: `package.json` package name and project-local `bin` entries.
+- Python: `pyproject.toml` project/script metadata, with only existing project-local `.venv` script paths offered as executable candidates.
+
+Known non-targets such as `studio`, `tunnel-client`, `gateway`, the nested infrastructure container, hidden directories, build output, and common generated directories are ignored.
+
+A malformed or unreadable project is isolated so it cannot abort the rest of a scan.
+
+Discovery returns preview candidates only. Registration is a separate same-origin mutation; the server rescans the candidate and only accepts an executable candidate produced by discovery. Registration never starts a process.
+
+## Dynamic registry/runtime reconciliation
+
+The supervisor and API share one live registry object. The supervisor does not own an immutable startup-only configuration snapshot.
+
+Transient runtime state is created lazily for registered IDs.
+
+Rules:
+
+- newly registered MCPs are immediately visible and begin stopped;
+- disabled MCPs remain registered/visible but cannot start or restart;
+- edit, disable, and unregister are rejected while a process is starting/running/stopping;
+- operator must stop first before those mutations;
+- unregister removes Studio registration and inactive runtime state only;
+- unregister never deletes source code or arbitrary files;
+- shutdown enumerates the current registry and stops Studio-owned active children.
+
+This avoids a separate registry-reload phase that could diverge after persistence succeeds.
+
+## Lifecycle domains and ownership
+
+MCP and tunnel use the same operational state vocabulary but remain separate supervisors:
 
 ```text
 STOPPED
@@ -60,103 +149,24 @@ STARTING
    | spawn
    v
 RUNNING --------------------+
-   | stop                    | unexpected non-zero exit / wait failure
+   | stop                    | unexpected exit / wait failure
    v                         v
 STOPPING                   FAILED
    |                         |
-   | exit                    | explicit start/restart
-   v                         |
-STOPPED <--------------------+
+   +---------- exit -------->+
 ```
 
-Auto-restart, exponential backoff, and crash-loop circuit breaking remain deferred.
+Studio may signal only PIDs obtained from children it spawned and currently tracks. Browser APIs never accept a PID.
 
-## Process ownership
+Unix stop remains SIGTERM + bounded wait + SIGKILL fallback.
 
-Studio may signal only a PID obtained from a child process it spawned and currently tracks. Neither MCP nor tunnel HTTP APIs accept a PID.
+## Tunnel boundary
 
-Unix stop behavior:
+Tunnel lifecycle remains independent from the MCP registry. M4 does not generalize tunnel configuration into a plugin/registry framework.
 
-1. transition tracked runtime state to `stopping`;
-2. send `SIGTERM` to the tracked child PID;
-3. wait for the monitor to observe termination;
-4. if `stop_timeout_ms` expires, send `SIGKILL`;
-5. wait again for a terminal state.
+Tunnel startup, path confinement, secret references, and log redaction remain as defined by ADR 0003.
 
-Studio graceful shutdown stops the owned tunnel and then all owned MCP processes.
-
-## Tunnel startup contract
-
-Milestone 3 intentionally manages exactly one configured tunnel runtime.
-
-Studio configuration provides:
-
-```toml
-[tunnel]
-name = "Secure tunnel"
-runtime = "../tunnel-client/tunnel-client-runtime-cloudflared"
-working_dir = "../tunnel-client"
-config_file = "../tunnel-client/config.yaml"
-```
-
-The backend constructs startup argv internally as exactly:
-
-```text
-run --config <validated-config-file>
-```
-
-There is no browser/API field for runtime path, config path, shell command, arbitrary argument array, or PID.
-
-At start time Studio canonicalizes `working_dir`, `runtime`, and `config_file`. Canonical runtime/config paths must remain inside canonical `working_dir`; runtime must be a regular executable file and config must be a regular file.
-
-## Tunnel secret references
-
-Optional tunnel environment values use server-side references rather than browser-visible values.
-
-Example:
-
-```toml
-[tunnel.env]
-TUNNEL_TOKEN = { from_env = "MCP_TUNNEL_TOKEN" }
-CREDENTIAL = { from_file = "../secrets/tunnel-token" }
-```
-
-References are resolved at spawn time. Public `TunnelStatus`, REST responses, WebSocket events, and frontend types contain no environment map, secret reference, runtime path, config path, or secret value.
-
-Resolved secret values are also registered with tunnel log redaction before log entries enter Studio's in-memory buffer or realtime stream.
-
-## Realtime event model
-
-Typed variants are:
-
-```text
-snapshot
-process_status
-log
-tunnel_status
-tunnel_log
-resync_required
-```
-
-The initial `snapshot` contains both current MCP process statuses and current tunnel status.
-
-The MCP and tunnel supervisors each publish to bounded broadcast streams. The WebSocket session listens to both. If either receiver lags, the server emits `resync_required` and follows it with a fresh combined snapshot.
-
-No uptime event is emitted once per second. Backend status carries an uptime sample and the browser advances displayed uptime locally while a runtime remains running.
-
-## Logs
-
-MCP and tunnel logs use separate bounded in-memory ring buffers with monotonically increasing per-domain sequence numbers.
-
-Tunnel log handling additionally:
-
-- removes ANSI control sequences;
-- replaces exact Studio-resolved secret values;
-- defensively redacts common token/secret/password/credential/authorization key-value fields.
-
-Persistent logs, rotation, byte-rate controls, and generalized MCP secret redaction remain deferred.
-
-## HTTP and WebSocket API
+## HTTP API
 
 ```text
 GET  /health
@@ -169,6 +179,17 @@ POST /api/mcp/{id}/stop
 POST /api/mcp/{id}/restart
 GET  /api/mcp/{id}/logs
 
+GET    /api/registry
+GET    /api/registry/{id}
+PUT    /api/registry/{id}
+DELETE /api/registry/{id}
+POST   /api/registry/{id}/enable
+POST   /api/registry/{id}/disable
+
+GET  /api/discovery
+POST /api/discovery/scan
+POST /api/discovery/{candidate_id}/register
+
 GET  /api/tunnel
 POST /api/tunnel/start
 POST /api/tunnel/stop
@@ -178,59 +199,69 @@ GET  /api/tunnel/logs
 GET  /api/ws
 ```
 
-Expected lifecycle conflicts return `409 Conflict`. Configuration/runtime validation failures return an error without spawning an unmanaged command.
+Expected not-found/conflict/validation classes are mapped separately so callers can distinguish invalid configuration from runtime/persistence failures.
+
+## Realtime model
+
+Operational snapshot events remain focused on MCP process status and tunnel status.
+
+Typed incremental events are:
+
+```text
+snapshot
+process_status
+log
+tunnel_status
+tunnel_log
+registry_changed
+discovery_changed
+resync_required
+```
+
+Registry/discovery changes are invalidations: the browser refetches current REST state instead of receiving full configuration in WebSocket payloads.
 
 ## Browser security boundary
 
-Studio remains loopback-only. Browser lifecycle mutations and WebSocket upgrades enforce the same origin policy:
+Studio remains loopback-only.
 
-1. requests without an `Origin` header remain available to local non-browser clients;
-2. browser requests with `Origin` require `Host`;
-3. origin must exactly match `http://{Host}` or `https://{Host}`;
-4. foreign origins are rejected;
-5. wildcard CORS is not enabled.
+All lifecycle/registry/discovery/tunnel mutations and WebSocket upgrades use the existing same-origin `Origin`/`Host` protection. Local non-browser clients without an `Origin` header remain supported by design.
 
-Authentication/authorization remains intentionally absent because non-loopback Studio operation is prohibited.
+Remote operation remains unsupported until authentication, authorization, CSRF/CORS, TLS/exposure, and session policy are explicitly designed.
 
 ## Frontend architecture
 
-The dashboard explicitly separates:
+The dashboard separates:
 
 - Studio realtime connection state;
-- MCP server lifecycle state;
-- secure tunnel lifecycle state.
+- MCP runtime state;
+- tunnel runtime state;
+- persistent registry configuration;
+- discovery preview/approval.
 
-Tunnel UI shows only operational state: runtime availability, lifecycle state, PID, uptime, restart/crash counters, last exit/error, actions, and redacted logs.
-
-The frontend type contract intentionally contains no secret/config/runtime-path fields.
-
-## Configuration
-
-Configuration remains TOML and loopback-only.
-
-Relative paths are resolved against Studio's process working directory. MCP definitions continue to use structured fields rather than shell command strings. Tunnel configuration is more constrained: no arbitrary tunnel argv field exists in M3.
+Registry UI exposes only safe metadata. It provides edit, enable/disable, and unregister actions. Discovery UI provides scan/review/register and does not auto-register or auto-start.
 
 ## Error handling
 
 - Library boundaries return typed `StudioError` values.
-- Top-level startup may use `anyhow` for context aggregation.
-- Expected lifecycle errors do not panic.
-- Spawn/wait failures are recorded in runtime state.
+- Expected lifecycle/registry conflicts do not panic.
 - Browser same-origin failures return `403 Forbidden`.
-- Tunnel path/secret validation fails before process spawn.
+- Registry/path validation failures are rejected before mutation or spawn.
+- Persistence failure leaves the previous in-memory registry authoritative because the new state is published only after successful atomic replacement.
+- Per-project discovery parse/read failures do not terminate the whole scan.
 
 ## Security boundary summary
 
 1. Studio HTTP remains loopback-only.
-2. Browser lifecycle mutations and WebSocket upgrades are same-origin constrained.
-3. Browser APIs accept no shell commands, executable paths, arbitrary argv, config paths, or PIDs.
-4. Studio terminates only process instances it started and tracks.
-5. Tunnel executable/config paths are canonicalized and confined to configured tunnel working directory.
-6. Tunnel secrets remain server-side and are absent from public status/event/frontend types.
-7. Tunnel logs are redacted before buffering/streaming.
-8. MCP log redaction remains a known later-hardening requirement.
-9. Auto-discovery never auto-executes code when introduced later.
+2. Browser privileged operations are same-origin constrained.
+3. Discovery is metadata-only and never grants execution automatically.
+4. Browser APIs accept no raw shell commands or PIDs.
+5. MCP executable authority is confined to a registered project under the configured MCP root.
+6. Project/working/executable paths reject traversal and symlink components and are revalidated before spawn.
+7. Studio signals only child PIDs it owns.
+8. Registry browser views/events omit environment/secret values.
+9. Unregister never deletes source code.
+10. Tunnel remains a separate constrained lifecycle/secret domain.
 
 ## Evolution rule
 
-Changes that materially affect process ownership, signal behavior, executable policy, tunnel invocation/secret policy, browser-origin policy, authentication, persistence, gateway behavior, external API contracts, or tunnel exposure require architecture/threat review and may require a new ADR.
+Changes that materially affect process ownership, executable/root policy, symlink policy, registry persistence/migration, discovery approval, browser-origin policy, authentication, tunnel invocation/secret policy, gateway behavior, or external API contracts require architecture/threat review and may require a new ADR.

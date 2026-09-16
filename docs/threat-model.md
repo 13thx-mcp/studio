@@ -2,300 +2,262 @@
 
 ## Scope
 
-MCP Studio is a privileged local control plane. As of Milestone 3 it can start, stop, restart, and observe configured MCP child processes and one configured secure tunnel runtime through REST and a browser dashboard with WebSocket updates.
+MCP Studio is a privileged local control plane. As of Milestone 4 it can supervise registered MCP child processes, manage one separately configured secure tunnel runtime, persist MCP registration/configuration locally, and scan the configured MCP root for supported projects using metadata only.
 
-Persistent discovery/registry, historical metrics, SQLite persistence, remote authentication, and MCP gateway request telemetry remain later milestones.
+SQLite history/metrics/audit persistence, automatic restart/backoff, remote authentication/RBAC, and MCP gateway traffic telemetry remain later milestones.
 
 ## Assets
 
 - Host process execution capability.
-- MCP configuration.
-- Tunnel runtime configuration.
-- Managed child process identity/PIDs.
-- Filesystem paths exposed by MCP servers.
-- stdout/stderr operational logs.
-- Browser lifecycle-control capability.
-- Tunnel credentials, tokens, and private environment/file secret references.
-- Future registry, metrics, and audit history.
+- Persistent MCP registry/configuration.
+- Configured MCP-root authority boundary.
+- Managed child identity/PIDs and transient runtime state.
+- MCP source trees and executable artifacts.
+- Tunnel runtime/configuration and secret references.
+- Operational stdout/stderr logs.
+- Browser lifecycle/registry/discovery-control capability.
 
 ## Trust boundaries
 
 1. Browser/operator ↔ Studio localhost HTTP/WebSocket API.
-2. Studio ↔ managed MCP child processes.
-3. Studio ↔ managed tunnel child process.
-4. Studio ↔ local configuration/filesystem/secret references.
-5. Tunnel runtime ↔ external control plane/tunnel provider.
-6. Future Studio ↔ auto-discovered source trees.
+2. Studio registry/discovery service ↔ configured MCP root and project manifests.
+3. Persistent registry file ↔ live registry service.
+4. Registry service ↔ MCP supervisor launch configuration.
+5. Studio ↔ managed MCP child processes.
+6. Studio ↔ managed tunnel child process and server-side secret references.
+7. Tunnel runtime ↔ external tunnel provider/control plane.
 
-## Milestone 3 security properties
+## Active M4 security properties
 
-- Studio rejects non-loopback HTTP bind addresses.
-- Browser lifecycle mutations enforce same-origin `Origin`/`Host` alignment when `Origin` is present.
-- WebSocket upgrades use the same browser-origin check.
-- Wildcard CORS is not enabled.
-- API callers cannot submit arbitrary executable paths, shell command strings, argument arrays, config-file paths, or PIDs.
-- Only statically configured MCP definitions and the statically configured tunnel runtime can be started.
-- Tunnel startup argv is constructed internally as `run --config <validated-config-file>`.
-- Commands are executed directly via `tokio::process::Command`, not shell interpolation.
-- Studio signals only PIDs returned from processes it spawned and currently tracks.
-- Tunnel runtime and tunnel config paths are canonicalized and constrained below configured `tunnel.working_dir`.
-- Tunnel runtime must exist, be a regular file, and have an executable permission bit.
-- Tunnel secret references are resolved server-side only.
-- Tunnel status/events do not serialize executable paths, config paths, secret references, or secret values.
-- Resolved tunnel secret values are redacted before tunnel logs enter the in-memory log buffer or WebSocket stream.
-- Common secret-bearing tunnel log fields are redacted defensively.
-- Recent log buffers are bounded.
-- Process state uses generation guards so stale monitor tasks cannot overwrite newer process state.
-- WebSocket fan-out is bounded and lagged subscribers are resynchronized instead of blocking supervisors.
-- Studio shutdown attempts to stop every owned MCP process and the owned tunnel process.
+- Studio remains loopback-only.
+- Privileged browser mutations and WebSocket upgrades enforce same-origin `Origin`/`Host` alignment.
+- No API accepts raw shell commands or PIDs.
+- Discovery never executes project code.
+- Discovery never auto-registers or auto-starts a project.
+- Registration requires explicit operator action and server-side candidate rescan.
+- Persistent registry uses an explicit schema version and fails safely on malformed/unsupported state.
+- Registry updates are complete-document atomic replacements; failed writes do not publish the candidate in memory.
+- MCP project, working-directory, and executable paths are project/root confined.
+- Absolute paths, traversal/root/prefix components, and symlink components are rejected.
+- Executable/working-directory policy is revalidated immediately before spawn.
+- Executable and arguments are structured data passed directly to `tokio::process::Command`; no shell interpolation is used.
+- Disabled MCPs cannot start/restart.
+- Edit, disable, and unregister are rejected while the MCP is active.
+- Unregister removes Studio registration only and accepts no caller-supplied delete path.
+- Studio signals only PIDs returned by children it spawned and currently tracks.
+- Registry API/realtime payloads omit stored environment values.
+- Tunnel remains a separate constrained lifecycle/secret domain with M3 log redaction controls.
+- Recent logs and realtime fan-out remain bounded.
 
 ## Primary threats and controls
 
-### Arbitrary command execution
+### Malicious project manifest / discovery-triggered execution
 
-Risk: an API or browser caller causes Studio to execute attacker-controlled commands.
+**Risk:** a project under the MCP root uses manifest content to cause Studio to execute code during scan or approval.
 
-Controls:
+**Controls:**
 
-- No raw shell-command API.
-- No caller-supplied executable, config path, argument array, or PID in lifecycle HTTP requests.
-- MCP executable/args remain local typed configuration.
-- Tunnel executable/config paths remain local typed configuration.
-- Tunnel argv is fixed by Studio rather than browser-configurable.
-- Milestone 3 registry remains static and loaded locally.
+- Rust discovery parses `Cargo.toml` as data only.
+- Node discovery parses `package.json` as JSON only and never executes scripts/install hooks.
+- Python discovery parses `pyproject.toml` as data only and never imports modules.
+- Discovery invokes no shell, package manager, compiler, interpreter, or project executable.
+- Registration is separate from discovery and never starts the project.
+- One malformed/unreadable project is isolated from unrelated scan results.
 
-Residual risk: anyone able to modify Studio's local configuration can alter configured executables or secret references. Configuration file permissions remain part of host security.
+**Residual risk:** manifest parsing still consumes attacker-controlled local data; parser/library vulnerabilities and resource-exhaustion cases remain supply-chain/robustness concerns.
 
-### Tunnel executable/config path escape
+### Path traversal / MCP-root escape
 
-Risk: a tunnel configuration points outside the intended runtime bundle or uses a symlink to escape the configured directory.
+**Risk:** editable project/executable/working-directory paths escape the configured authority root.
 
-Controls:
+**Controls:**
 
-- `working_dir`, `runtime`, and `config_file` are canonicalized before spawn.
-- The canonical runtime and config file must remain below canonical `tunnel.working_dir`.
-- Runtime must be a regular executable file.
-- Config must be a regular file.
+- MCP root is canonicalized by Studio.
+- Persisted project paths are relative to MCP root.
+- Executable and working-directory paths are relative to the registered project.
+- Absolute paths and `..`, root, or platform-prefix components are rejected.
+- Canonical project must remain under MCP root.
+- Canonical executable/working directory must remain under the project.
+- The same policy is revalidated before every spawn.
 
-Residual risk: the configured tunnel working directory itself is trusted local configuration. Milestone 3 does not implement a global allow-list of absolute host roots beyond that server-side boundary.
+### Symlink escape
+
+**Risk:** a path that appears confined lexically resolves through a symlink to another host location.
+
+**Controls:**
+
+- M4 rejects symlink components in registered project, working-directory, and executable paths rather than treating a mutable symlink target as an authorization boundary.
+- Canonical containment is checked as a second layer.
+
+**Residual risk:** a local actor with write access to ordinary path components can race filesystem replacement between validation and spawn. Revalidation narrows the window; descriptor-based execution/openat confinement is a possible later hardening step.
+
+### Executable-path abuse / arbitrary host execution
+
+**Risk:** registry editing turns Studio into a general process launcher.
+
+**Controls:**
+
+- Browser configuration uses a project-relative executable path, not a shell command.
+- Executable must remain inside the registered project.
+- Discovery registration initially accepts only executable candidates produced by the server-side metadata scan.
+- Arguments are a structured list; no shell interpolation is performed.
+- Executable must be a regular file at activation time.
+
+**Residual risk:** code inside an explicitly registered project is operator-approved execution authority. Registering or editing an executable should therefore be treated as a privileged action.
+
+### Argument injection
+
+**Risk:** structured arguments are interpreted as shell syntax or mutate process selection.
+
+**Controls:**
+
+- Arguments are passed directly as argv elements to `Command`.
+- No shell is invoked by Studio.
+- Executable selection is independent of argument text and remains path-confined.
+
+**Residual risk:** a managed MCP may itself interpret dangerous arguments. M4 confines executable authority but does not understand every child-specific option grammar; operators remain responsible for reviewed argument values.
+
+### Environment/secret leakage
+
+**Risk:** inherited environment values become visible through registry REST, WebSocket events, or UI.
+
+**Controls:**
+
+- Public registry DTOs omit the environment map entirely.
+- M4 adds no generic browser environment/secret editor.
+- Registry/discovery realtime events are invalidations without full configuration payloads.
+- Tunnel secrets retain M3 server-side references/redaction.
+
+**Residual risk:** legacy static MCP environment values may still exist server-side and managed MCP stdout/stderr remains a separate secret-leakage domain without generalized redaction.
+
+### Registry file tampering / malformed persisted config
+
+**Risk:** local modification or interrupted writes corrupt the execution policy.
+
+**Controls:**
+
+- Explicit schema version.
+- Full validation on startup.
+- Unsupported/malformed registry fails startup instead of falling back or overwriting it.
+- Mutation writes a complete temp sibling, syncs it, atomically renames it, then publishes the new in-memory state.
+- Deterministic map serialization makes operator review/diffing practical.
+
+**Residual risk:** filesystem permissions remain the primary protection against a local actor who can intentionally rewrite the registry. File authentication/signing is not part of M4.
+
+### Unauthorized registration/config mutation
+
+**Risk:** a malicious webpage reaches localhost Studio and registers or changes executable configuration.
+
+**Controls:**
+
+- Registry/discovery mutations use the same browser same-origin check as lifecycle/tunnel mutations.
+- Studio remains loopback-only.
+- Foreign browser origins receive `403 Forbidden`.
+- Discovery registration resolves the candidate server-side rather than accepting an arbitrary browser path.
+
+**Residual risk:** local non-browser processes may call the API without `Origin` by design. Host account/process isolation is trusted until remote/multi-user authentication is introduced.
+
+### Running-process config mutation / orphaned ownership
+
+**Risk:** configuration changes underneath an active child and causes runtime/registry state to diverge.
+
+**Controls:**
+
+- Edit, disable, and unregister are rejected while state is `starting`, `running`, or `stopping`.
+- Operator must explicitly stop first.
+- Unregister removes only inactive runtime state.
+- Studio continues to signal only the tracked owned PID.
+
+### Duplicate or stale registry entries
+
+**Risk:** multiple IDs refer to the same project or a removed entry remains startable through stale supervisor state.
+
+**Controls:**
+
+- Stable ID uniqueness is enforced.
+- Duplicate registered project paths are rejected.
+- Supervisor resolves live registry state for lifecycle operations instead of keeping an immutable startup-only registry snapshot.
+- Disabled/unregistered state therefore takes effect without supervisor reconstruction.
+
+### Persistence/runtime consistency
+
+**Risk:** persistent mutation succeeds but runtime reconciliation fails, or memory changes before disk durability.
+
+**Controls:**
+
+- The registry object is the shared authority used directly by supervisor lifecycle resolution.
+- Candidate state is published in memory only after successful persistence.
+- No separate asynchronous supervisor reload step exists.
+- Active mutations that would require reconciliation are rejected stop-first.
+
+### TOCTOU between validation and spawn
+
+**Risk:** filesystem contents change after validation but before `exec`.
+
+**Controls:**
+
+- Path/executable checks occur immediately before `Command::spawn`.
+- Symlink components are rejected.
+- Authorization remains scoped to the registered project root.
+
+**Residual risk:** ordinary files can still be replaced by another local writer in the remaining window. Stronger descriptor/handle-based execution is deferred unless threat review requires it.
+
+### Unregister/delete confusion
+
+**Risk:** an unregister API accidentally deletes source code or an attacker supplies a delete target.
+
+**Controls:**
+
+- Unregister accepts an MCP ID only.
+- It removes a registry record and inactive runtime state only.
+- No filesystem deletion target exists in the API/domain operation.
+
+### Process ownership / PID misuse
+
+**Risk:** Studio signals an unrelated host process.
+
+**Controls:**
+
+- PID originates only from `Child::id()` for a Studio-spawned child.
+- API accepts no PID.
+- Generation guards prevent stale monitor tasks from overwriting newer runtime state.
+- Stop/restart act only on currently tracked runtime state.
 
 ### Cross-origin localhost control
 
-Risk: a malicious remote webpage causes a user's browser to send privileged lifecycle requests to Studio on `127.0.0.1`.
+**Risk:** a remote webpage causes privileged requests to localhost Studio.
 
-Controls:
+**Controls:**
 
-- MCP and tunnel lifecycle POST requests validate `Origin` when present.
-- A browser request with `Origin` must provide `Host`.
-- Accepted origin must exactly match `http://{Host}` or `https://{Host}`.
-- Foreign origins receive `403 Forbidden`.
+- Browser mutations validate `Origin` when present and require matching `Host`.
 - WebSocket upgrades use the same policy.
 - Wildcard CORS is not enabled.
-- Studio remains loopback-only.
+- Studio rejects non-loopback bind addresses.
 
-Residual risk: non-browser local processes can call the API without `Origin`. This is intentional for local CLI/operator workflows and assumes local account/process isolation.
+### Tunnel secret/exposure threats
 
-### Unauthorized remote control
+Tunnel management remains governed by ADR 0003/M3 controls:
 
-Risk: lifecycle endpoints become reachable remotely without authentication.
+- fixed server-side invocation shape;
+- tunnel runtime/config confinement;
+- server-side secret references;
+- exact-secret/common-field log redaction;
+- explicit lifecycle start;
+- loopback-only Studio exposure.
 
-Controls:
+M4 does not merge tunnel configuration into the MCP registry.
 
-- Config validation rejects non-loopback bind addresses.
-- No remote Studio mode is supported in Milestone 3.
+### Denial of service / log pressure
 
-Remote operation must not ship until authentication, authorization, CSRF/CORS behavior, TLS/tunnel exposure, and session policy are explicitly designed and reviewed.
+Current controls:
 
-### Process ownership confusion / PID misuse
+- duplicate starts are rejected;
+- incompatible lifecycle/config mutations are rejected;
+- MCP/tunnel recent log buffers are bounded;
+- realtime uses bounded broadcast channels and resync on lag;
+- one bad discovery candidate does not abort a whole scan.
 
-Risk: Studio kills an unrelated host process.
-
-Controls:
-
-- PID comes only from `Child::id()` for a Studio-spawned child.
-- API does not expose kill-by-PID.
-- State tracks whether the corresponding child is running/stopping.
-- Generation guards prevent older monitor tasks from mutating newer runtime state.
-- Tunnel stop/restart signals only the currently tracked Studio-owned tunnel PID.
-
-Residual risk: PID reuse between detecting a hung process and signal escalation is theoretically possible. Production hardening should prefer stronger OS process identity/handle semantics where available.
-
-### Orphan child processes
-
-Risk: Studio exits while managed processes remain alive.
-
-Controls:
-
-- Graceful Studio shutdown calls tunnel shutdown plus MCP `shutdown_all()`.
-- Spawned children use `kill_on_drop(true)` as a local-process safety net.
-- Lifecycle tests verify supervisor shutdown behavior for tunnel fixtures.
-
-Further hardening may add process groups/session management where managed runtimes spawn descendants.
-
-### Tunnel secret leakage through API/events/UI
-
-Risk: credentials or private configuration are serialized to browser-visible surfaces.
-
-Controls:
-
-- `TunnelStatus` contains only operational state and counters.
-- Runtime path, config path, environment map, and secret-reference model are not part of public status/event types.
-- Frontend tunnel types contain no secret/config fields.
-- Snapshot and incremental WebSocket tunnel events carry only public operational fields and redacted log entries.
-
-Residual risk: the tunnel runtime may emit sensitive material in formats not recognized by generic redaction. Exact resolved secret values are always redacted when Studio supplied them, but secrets sourced internally by the tunnel runtime may require runtime-specific patterns.
-
-### Tunnel secret leakage through logs
-
-Risk: the tunnel process writes secrets to stdout/stderr and Studio exposes them through REST/WebSocket/dashboard.
-
-Controls:
-
-- Exact secret values resolved by Studio are replaced before buffering or publishing.
-- ANSI sequences are removed before display.
-- Common key/value names such as token, secret, password, credential, and authorization are defensively redacted.
-- Secret values are not written by Studio lifecycle log messages.
-
-Residual risk:
-
-- Redaction is best-effort for secrets unknown to Studio.
-- Encoded, transformed, fragmented, or unusually formatted secret material may evade generic pattern matching.
-- Security review of actual tunnel runtime output remains part of the real-runtime smoke gate.
-
-### Secret-reference misuse
-
-Risk: a local tunnel configuration reads unintended secret files or environment variables.
-
-Controls:
-
-- Secret references are server-side configuration only and never browser supplied.
-- Missing or empty secret references fail startup.
-- Resolved values are held only in process environment/redaction memory and are not returned by status APIs.
-
-Residual risk: a user with permission to edit Studio configuration can reference files readable by the Studio process. Host filesystem permissions remain authoritative.
-
-### Tunnel accidental public exposure
-
-Risk: starting the managed tunnel exposes services externally in an unintended way.
-
-Controls:
-
-- Tunnel is stopped by default when Studio starts.
-- Startup remains an explicit lifecycle action.
-- Studio does not synthesize tunnel destinations or browser-supplied routing arguments.
-- The existing reviewed `tunnel-client/config.yaml` remains authoritative for routing/channel behavior.
-- Studio itself remains bound to loopback and is not automatically exposed by tunnel management.
-
-Residual risk: the external exposure semantics are determined by the configured tunnel runtime/configuration and upstream control plane. Operators must review that configuration before start. Remote Studio access is still unsupported.
-
-### Denial of service through lifecycle calls
-
-Risk: repeated start/restart operations exhaust resources.
-
-Controls now:
-
-- Duplicate starts are rejected.
-- One tunnel runtime record exists for Milestone 3.
-- UI disables conflicting lifecycle controls during transitions/request execution.
-
-Deferred controls:
-
-- Restart backoff.
-- API rate limiting.
-- Crash-loop circuit breaker.
-- Operational quotas.
-
-These remain later hardening work.
-
-### WebSocket subscriber pressure
-
-Risk: a slow browser client blocks runtime event production or consumes unbounded memory.
-
-Controls:
-
-- MCP and tunnel event sources use bounded Tokio broadcast channels.
-- Slow subscribers receive lag errors rather than blocking publishers.
-- Lagged clients receive `resync_required` and a fresh combined snapshot.
-- Browser reconnect backoff is capped to avoid a tight retry loop.
-
-Residual risk: many simultaneous local browser clients can still create CPU/network load. Multi-user fan-out limits are deferred until remote/multi-user mode exists.
-
-### Log/memory exhaustion
-
-Risk: noisy child output consumes unbounded memory.
-
-Controls:
-
-- MCP and tunnel recent logs use fixed-capacity ring buffers.
-- Oldest entries are discarded when capacity is reached.
-
-Residual risk: extremely high stdout/stderr rates can still consume CPU and WebSocket bandwidth. Rate/byte limits may be added during hardening.
-
-### Realtime state inconsistency
-
-Risk: a browser misses events and displays stale lifecycle state.
-
-Controls:
-
-- WebSocket sends a complete initial snapshot containing MCP and tunnel status.
-- Broadcast lag emits `resync_required` followed by a new snapshot.
-- Browser can refetch REST state.
-- Log sequence numbers deduplicate overlap between REST history and WebSocket events.
-- Browser refresh rehydrates state from backend sources rather than persistent client state.
-- Backend lifecycle validation remains authoritative regardless of UI state.
-
-### MCP log secret leakage
-
-Risk: MCP child processes write secrets to stdout/stderr and Studio exposes them.
-
-Current limitation:
-
-- MCP logs remain captured verbatim in Milestone 3.
-- Tunnel-specific redaction is not generalized to MCP logs yet.
-
-Controls:
-
-- MCP environment configuration is not included in `ProcessStatus` or dashboard status payloads.
-- Managed MCP servers are operationally required not to print credentials or secret environment values.
-
-Production requirement:
-
-- General secret-aware redaction before persistent storage or broader remote/browser deployment.
-
-### MCP path traversal / executable escape
-
-Risk: future registry editing or discovery points commands outside the allowed MCP root.
-
-Milestone 3:
-
-- MCP configuration is local/static and no browser endpoint mutates executable paths.
-
-Required before editable registry/discovery:
-
-- Canonicalize paths.
-- Constrain allowed roots.
-- Define symlink policy.
-- Explicit approval before registration/execution.
-
-### Malicious discovered project
-
-Deferred to Milestone 4.
-
-Required controls:
-
-- Discovery is metadata-only.
-- No auto-execution.
-- Registration requires explicit approval.
-- Start remains an explicit action.
-
-### Crash-loop resource exhaustion
-
-Deferred controls:
-
-- restart backoff;
-- circuit breaker;
-- restart limits;
-- event audit.
+Deferred controls include rate limiting, restart backoff/circuit breaking, and more explicit scan/manifest resource limits.
 
 ### Supply-chain compromise
 
@@ -303,30 +265,24 @@ Controls:
 
 - `Cargo.lock` committed.
 - Rust toolchain pinned to 1.98.1.
-- Rust quality gates include locked release builds and `cargo audit`.
-- Frontend uses a committed `pnpm-lock.yaml`.
-- TypeScript/ESLint compatibility-sensitive toolchain versions are pinned through the lockfile/release gates.
+- release gates require formatting, clippy with warnings denied, tests, builds, dependency audit, and locked release build.
+- frontend lockfile is committed and lint/typecheck/test/build are release gates.
 
-## Security release gate
+## M4 security release gate
 
-Milestone 3 must not close with unresolved known Critical or High severity findings in privileged lifecycle, browser-origin handling, tunnel executable/config confinement, secret handling, process ownership, or tunnel exposure.
+Milestone 4 must not close with an unresolved known Critical/High finding in:
 
-The real-runtime smoke test must additionally inspect tunnel logs for credential/token leakage before release.
+- discovery-triggered execution;
+- MCP-root/path/symlink confinement;
+- executable/argument handling;
+- secret exposure;
+- registry persistence/tampering behavior;
+- same-origin privileged mutations;
+- process ownership;
+- running-state registry mutation;
+- unregister/delete separation;
+- existing tunnel security guarantees.
 
 ## Review triggers
 
-Update this threat model whenever adding or materially changing:
-
-- process spawn/kill behavior;
-- descendant/process-group handling;
-- browser origin/CORS/CSRF handling;
-- WebSocket/event fan-out behavior;
-- tunnel executable/configuration policy;
-- tunnel secret handling/redaction;
-- discovery/registration;
-- editable executable configuration;
-- persistent secrets;
-- remote access/authentication;
-- MCP gateway/proxying;
-- plugins/adapters;
-- multi-host control.
+Update this threat model whenever materially changing process spawn/kill behavior, project/executable roots, symlink policy, discovery parsers, registry schema/persistence, browser-origin/CORS/CSRF policy, secret handling, remote access/authentication, gateway/proxying, plugins/adapters, or multi-host control.

@@ -123,7 +123,10 @@ impl Registry {
     }
 
     #[cfg(test)]
-    pub fn in_memory(root: PathBuf, servers: BTreeMap<String, RegisteredMcp>) -> StudioResult<Self> {
+    pub fn in_memory(
+        root: PathBuf,
+        servers: BTreeMap<String, RegisteredMcp>,
+    ) -> StudioResult<Self> {
         let canonical_root = fs::canonicalize(root)?;
         let document = RegistryDocument {
             schema_version: REGISTRY_SCHEMA_VERSION,
@@ -249,10 +252,7 @@ impl Registry {
     }
 
     fn snapshot(&self) -> RegistryDocument {
-        self.inner
-            .read()
-            .expect("registry lock poisoned")
-            .clone()
+        self.inner.read().expect("registry lock poisoned").clone()
     }
 
     fn persist_and_replace(&self, candidate: RegistryDocument) -> StudioResult<()> {
@@ -318,9 +318,15 @@ fn validate_id(id: &str) -> StudioResult<()> {
     Ok(())
 }
 
-fn validate_server(server: &RegisteredMcp, canonical_root: &Path, require_executable: bool) -> StudioResult<()> {
+fn validate_server(
+    server: &RegisteredMcp,
+    canonical_root: &Path,
+    require_executable: bool,
+) -> StudioResult<()> {
     if server.name.trim().is_empty() {
-        return Err(StudioError::Config("MCP display name must not be empty".into()));
+        return Err(StudioError::Config(
+            "MCP display name must not be empty".into(),
+        ));
     }
     validate_relative_path(&server.project_path, "project_path")?;
     validate_relative_path(&server.executable, "executable")?;
@@ -366,7 +372,11 @@ fn resolve_project(root: &Path, relative: &Path) -> StudioResult<PathBuf> {
     Ok(canonical)
 }
 
-fn resolve_existing_child(project: &Path, relative: &Path, directory: bool) -> StudioResult<PathBuf> {
+fn resolve_existing_child(
+    project: &Path,
+    relative: &Path,
+    directory: bool,
+) -> StudioResult<PathBuf> {
     validate_relative_path(relative, "project-relative path")?;
     ensure_no_symlink_components(project, relative)?;
     let canonical = fs::canonicalize(project.join(relative)).map_err(|error| {
@@ -401,7 +411,10 @@ fn validate_relative_path(path: &Path, label: &str) -> StudioResult<()> {
         return Err(StudioError::Config(format!("{label} must be relative")));
     }
     for component in path.components() {
-        if matches!(component, Component::ParentDir | Component::RootDir | Component::Prefix(_)) {
+        if matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        ) {
             return Err(StudioError::Config(format!(
                 "{label} contains forbidden traversal/root component: {}",
                 path.display()
@@ -511,7 +524,10 @@ fn persist_document(path: &Path, document: &RegistryDocument) -> StudioResult<()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let file_name = path.file_name().and_then(|name| name.to_str()).unwrap_or("registry.toml");
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("registry.toml");
     let temp_path = parent.join(format!(".{file_name}.{}.{}.tmp", std::process::id(), stamp));
 
     let result = (|| -> StudioResult<()> {
@@ -550,7 +566,10 @@ mod tests {
         let path = std::env::temp_dir().join(format!(
             "mcp-studio-registry-{name}-{}-{}",
             std::process::id(),
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         fs::create_dir_all(&path).unwrap();
         path

@@ -1,26 +1,37 @@
 # MCP Studio
 
-Local-first web control plane for monitoring and managing MCP servers and the configured secure tunnel runtime under `mcp-server/`.
+Local-first web control plane for safely discovering, registering, configuring, supervising, and observing MCP servers plus the separately managed secure tunnel runtime under `mcp-server/`.
 
 ## Current status
 
-Milestone 3 — Secure Tunnel Management is complete and released as `v0.3.0`.
+Milestone 4 — Registry, Configuration & Auto-Discovery is implemented on `feature/registry-auto-discovery` and is awaiting its required Rust/frontend/manual smoke gates before release as `v0.4.0`.
 
-Current capabilities include:
+The last released version remains `v0.3.0` until those gates pass and the required release-prep/merge/tag workflow is completed.
 
-- Static MCP registry and MCP lifecycle supervision.
-- MCP start / stop / restart with PID ownership safety.
-- Secure tunnel start / stop / restart using one validated server-side tunnel configuration.
-- MCP and tunnel PID, state, uptime, restart count, crash count, last exit, and last error reporting.
-- Bounded recent logs for MCP and tunnel processes.
-- Tunnel secret-value redaction before logs reach REST, WebSocket, or dashboard consumers.
-- REST lifecycle APIs.
-- Typed WebSocket runtime events and reconnect/resync behavior.
-- React/TypeScript dashboard with separate Studio connection, MCP lifecycle, and tunnel lifecycle state.
-- Same-origin browser protection for lifecycle mutations and WebSocket upgrades.
-- Production frontend assets served by the Studio Axum service from `web/dist`.
+Current M4 capabilities include:
 
-Persistent registry/discovery, SQLite history, remote authentication, auto-restart/backoff, and MCP gateway request telemetry remain deferred to later milestones in `ROADMAP.md`.
+- schema-versioned persistent MCP registry;
+- atomic file-backed registry writes at `data/registry.toml` by default;
+- one-time bootstrap from legacy `[mcp.*]` configuration;
+- configurable, canonicalized MCP discovery root;
+- metadata-only Rust/Node/Python discovery;
+- explicit review/approval before registration;
+- dynamic registration without Studio source changes or restart;
+- structured project-relative executable, working-directory, and argument configuration;
+- path traversal/symlink/executable confinement;
+- enable/disable and unregister semantics;
+- live registry integration with the MCP supervisor;
+- MCP start / stop / restart with Studio-owned PID safety;
+- secure tunnel start / stop / restart in a separate lifecycle domain;
+- bounded MCP/tunnel logs;
+- tunnel secret-value redaction;
+- REST lifecycle/registry/discovery APIs;
+- typed WebSocket runtime events and registry/discovery invalidations;
+- React/TypeScript dashboard with MCP, tunnel, Registry, and Discovery sections;
+- same-origin browser protection for privileged mutations and WebSocket upgrades;
+- loopback-only Studio bind.
+
+SQLite history/metrics/audit persistence, automatic restart/backoff, remote authentication/RBAC, public Studio exposure, and MCP gateway traffic telemetry remain later milestones.
 
 ## Requirements
 
@@ -32,16 +43,88 @@ Persistent registry/discovery, SQLite history, remote authentication, auto-resta
 
 The pinned Rust toolchain is declared in `rust-toolchain.toml`.
 
-## Build managed MCP servers first
+## Registry and bootstrap
 
-Current defaults expect debug binaries at:
+M4 adds:
 
-```text
-../blender/target/debug/rust-mcp-blender
-../filesystem/target/debug/rust-mcp-filesystem
+```toml
+[registry]
+path = "data/registry.toml"
+mcp_root = ".."
 ```
 
-Build them before starting those MCPs through Studio:
+`registry.path` is Studio-owned mutable state. `registry.mcp_root` is the only root used for M4 discovery/registration.
+
+If the registry file does not exist, Studio converts legacy `[mcp.*]` entries into schema-v1 registry records and persists them once. Once the registry exists, it is authoritative; static entries are not reapplied on every restart.
+
+Example legacy bootstrap entry:
+
+```toml
+[mcp.filesystem]
+name = "Filesystem"
+command = "../filesystem/target/debug/rust-mcp-filesystem"
+working_dir = "../filesystem"
+args = ["--root", ".."]
+```
+
+## Registry path/executable policy
+
+Registered MCPs use structured paths rather than shell command strings:
+
+```text
+MCP root
+└── registered project
+    ├── project-relative executable
+    └── project-relative working directory
+```
+
+Studio rejects:
+
+- absolute project/executable/working-directory paths;
+- `..` traversal or root/prefix escapes;
+- symlink components in registered execution paths;
+- executable or working-directory resolution outside the registered project;
+- project resolution outside the configured MCP root.
+
+The policy is validated on configuration mutation and again immediately before process spawn. Arguments remain a structured argv list and are never shell-interpolated.
+
+Browser registry responses do not include stored environment values.
+
+## Discovery
+
+Discovery is metadata-only and scans direct child directories of the configured MCP root.
+
+Supported initial metadata sources:
+
+- Rust: `Cargo.toml` package/default-run/bin metadata;
+- Node: `package.json` package name and safe project-local `bin` entries;
+- Python: `pyproject.toml` project/script metadata and existing project-local `.venv` script paths.
+
+Discovery never runs:
+
+- Cargo/build commands;
+- npm/pnpm/yarn scripts or installs;
+- Python imports or modules;
+- project executables;
+- shell commands.
+
+Known infrastructure/build locations such as Studio itself, tunnel-client, gateway, hidden directories, target/build output, and common generated directories are ignored.
+
+A discovery result is only a preview. Registration requires a separate explicit operator action, the server rescans the candidate, and registration leaves the MCP stopped.
+
+## Enable, disable, edit, and unregister semantics
+
+- `enabled = false` keeps the MCP registered and visible but prevents start/restart.
+- Edit, disable, and unregister require the MCP to be inactive; stop it first.
+- Unregister removes only Studio registration and inactive runtime state.
+- Unregister never deletes project source or arbitrary filesystem content.
+- A newly registered MCP becomes available to the live supervisor without restarting Studio.
+
+## Build managed MCP servers
+
+Discovery does not build projects. An executable must exist and satisfy the project confinement policy before activation.
+
+For the default Rust projects, for example:
 
 ```bash
 cd mcp-server/blender
@@ -49,31 +132,22 @@ cargo build
 
 cd ../filesystem
 cargo build
+
+cd ../git
+cargo build
 ```
 
 ## Tunnel runtime
 
-The default Milestone 3 configuration manages:
+Tunnel lifecycle remains a separate domain from the MCP registry.
 
-```text
-../tunnel-client/tunnel-client-runtime-cloudflared
-```
-
-with:
-
-```text
-../tunnel-client/config.yaml
-```
-
-Studio constructs the tunnel runtime invocation internally as:
+The configured tunnel runtime is invoked internally as:
 
 ```text
 tunnel-client-runtime-cloudflared run --config <validated-config-file>
 ```
 
-The browser cannot supply an executable path, shell command, PID, config path, or arbitrary argument array.
-
-Only the tunnel PID spawned and currently tracked by Studio is eligible for lifecycle signals.
+The browser cannot supply a tunnel executable, config path, shell command, arbitrary argv, or PID. Tunnel secret references stay server-side and resolved values are redacted from tunnel logs before REST/WebSocket/dashboard publication.
 
 ## Build the dashboard
 
@@ -83,13 +157,13 @@ pnpm install
 pnpm build
 ```
 
-The production bundle is written to `web/dist` and served by Studio.
-
-For frontend development, Vite proxies `/api` and WebSocket traffic to Studio on `127.0.0.1:18100`:
+For frontend development:
 
 ```bash
 pnpm dev
 ```
+
+Vite proxies REST and WebSocket traffic to Studio on `127.0.0.1:18100`.
 
 ## Run Studio
 
@@ -123,6 +197,17 @@ POST /api/mcp/{id}/stop
 POST /api/mcp/{id}/restart
 GET  /api/mcp/{id}/logs
 
+GET    /api/registry
+GET    /api/registry/{id}
+PUT    /api/registry/{id}
+DELETE /api/registry/{id}
+POST   /api/registry/{id}/enable
+POST   /api/registry/{id}/disable
+
+GET  /api/discovery
+POST /api/discovery/scan
+POST /api/discovery/{candidate_id}/register
+
 GET  /api/tunnel
 POST /api/tunnel/start
 POST /api/tunnel/stop
@@ -132,96 +217,7 @@ GET  /api/tunnel/logs
 GET  /api/ws
 ```
 
-`/api/ws` sends an initial snapshot containing both MCP and tunnel status, followed by typed process/tunnel status and log events. If either broadcast receiver lags, Studio requests resynchronization and sends a fresh combined snapshot.
-
-## Dashboard
-
-The dashboard provides:
-
-- Studio realtime connection state.
-- MCP managed/running/failed summary.
-- Secure tunnel state summary.
-- MCP list and per-server details.
-- Separate tunnel detail panel.
-- MCP and tunnel start / stop / restart actions.
-- PID, uptime, restart count, crash count, last exit, and last error.
-- Live WebSocket updates.
-- Live MCP and tunnel logs.
-- MCP stream filtering and auto-scroll.
-- Automatic WebSocket reconnect with bounded exponential backoff.
-
-Studio connection state, MCP lifecycle state, and tunnel lifecycle state are intentionally presented as separate concepts.
-
-## Configuration
-
-See `studio.example.toml`.
-
-Run with a config file:
-
-```bash
-cargo run -- --config studio.example.toml
-```
-
-or:
-
-```bash
-MCP_STUDIO_CONFIG=studio.example.toml cargo run
-```
-
-MCP relative `command` and `working_dir` paths are resolved against Studio's process working directory.
-
-Tunnel configuration is server-side and typed:
-
-```toml
-[tunnel]
-name = "Secure tunnel"
-runtime = "../tunnel-client/tunnel-client-runtime-cloudflared"
-working_dir = "../tunnel-client"
-config_file = "../tunnel-client/config.yaml"
-```
-
-Tunnel runtime and config paths are canonicalized and must remain under the configured tunnel working directory.
-
-Optional tunnel environment secrets use server-side references rather than browser-provided values:
-
-```toml
-[tunnel.env]
-# TUNNEL_TOKEN = { from_env = "MCP_TUNNEL_TOKEN" }
-# CLOUDFLARED_CREDENTIAL = { from_file = "../secrets/cloudflared-token" }
-```
-
-Resolved secret values are not included in tunnel status, REST responses, WebSocket status events, or frontend types.
-
-Studio remains loopback-only. Remote access is intentionally unsupported until authentication/authorization and tunnel exposure are explicitly designed and reviewed.
-
-## Lifecycle model
-
-MCP and tunnel lifecycle domains both use the operational states:
-
-```text
-STOPPED
-   │ start
-   ▼
-STARTING
-   │ spawn
-   ▼
-RUNNING ───────────────┐
-   │ stop              │ unexpected exit / wait error
-   ▼                   ▼
-STOPPING             FAILED
-   │
-   └──── exit ─────► STOPPED
-```
-
-An unexpected tunnel exit is considered a crash even when the child exits with status `0`; only an exit observed while the tunnel is explicitly stopping is treated as a normal stopped transition.
-
-Stop behavior on Unix:
-
-1. Send `SIGTERM` to the owned child PID.
-2. Wait up to `stop_timeout_ms`.
-3. Escalate to `SIGKILL` when the process does not exit.
-
-Studio only signals PIDs that came from processes it spawned and currently tracks.
+Expected not-found, conflict, validation/path-policy, and persistence/process failures are mapped into distinct API error classes.
 
 ## Realtime model
 
@@ -233,33 +229,47 @@ process_status
 log
 tunnel_status
 tunnel_log
+registry_changed
+discovery_changed
 resync_required
 ```
 
-MCP and tunnel supervisors remain separate lifecycle domains. The WebSocket layer multiplexes their bounded realtime event streams into one browser protocol.
+The reconnect snapshot contains operational MCP/tunnel state. Registry/discovery events are invalidations; the browser refetches those resources over REST instead of receiving full registry configuration over WebSocket.
 
-Each log stream carries monotonic sequence numbers so the dashboard can deduplicate REST history and WebSocket events safely.
+## Dashboard
 
-Uptime is sampled from the backend and advanced locally in the browser between status events to avoid unnecessary one-second broadcast traffic.
+The dashboard provides:
+
+- Studio realtime connection state;
+- MCP registered/running/failed summary;
+- MCP lifecycle and recent logs;
+- separate secure tunnel lifecycle and redacted logs;
+- persistent Registry list and safe edit/enable/disable/unregister actions;
+- Discovery scan/review/register workflow;
+- runtime-state-aware disabling of unsafe registry mutations;
+- automatic WebSocket reconnect/resync.
+
+No environment/secret fields are rendered by the registry/discovery UI.
 
 ## Security baseline
 
 - Loopback-only HTTP control plane.
-- No arbitrary shell-command API.
-- Browser APIs do not accept executable paths or PIDs.
-- Tunnel argv is constructed internally from typed server-side configuration.
-- Tunnel runtime/config paths are canonicalized and confined to the configured tunnel working directory.
-- Studio signals only tracked child PIDs.
-- Browser lifecycle requests require same-origin `Origin`/`Host` alignment when an `Origin` header is present.
-- WebSocket upgrades use the same same-origin policy.
-- No wildcard CORS policy.
-- Tunnel secret references and resolved values remain server-side.
-- Tunnel logs redact resolved secret values and common secret-bearing fields before storage/streaming.
-- No auto-execution of discovered projects.
+- Same-origin protection for browser privileged mutations and WebSocket upgrades.
+- No raw browser-supplied shell commands or PIDs.
+- Metadata-only discovery with no auto-register or auto-start.
+- Project/executable/working-directory confinement below configured MCP root.
+- Traversal and symlink-component rejection.
+- Structured argv with no shell interpolation.
+- Pre-spawn path/executable revalidation.
+- Stop-first edit/disable/unregister semantics.
+- Studio signals only tracked child PIDs it spawned.
+- Registry browser DTOs/events omit environment values.
+- Unregister never deletes source code.
+- Tunnel remains a separate constrained lifecycle/secret boundary.
 
-MCP stdout/stderr remains a separate domain and is not covered by the Milestone 3 tunnel redactor; managed MCP servers must continue not to emit credentials.
+See `docs/threat-model.md` and ADRs 0004/0005 for the detailed trust model and residual risks.
 
-## Development checks
+## Development and release checks
 
 Rust:
 
@@ -270,6 +280,12 @@ cargo test --all-targets --all-features
 cargo build --all-targets --all-features
 cargo audit
 cargo build --release --locked
+```
+
+Filesystem/discovery-sensitive coverage should also be repeated before release:
+
+```bash
+for i in 1 2 3 4 5; do cargo test --test registry_discovery || exit 1; done
 ```
 
 Dashboard:
@@ -283,14 +299,16 @@ pnpm test
 pnpm build
 ```
 
+M4 release additionally requires real-workspace discovery/registration/persistence/enable-disable/unregister smoke tests and M1–M3 lifecycle/tunnel/WebSocket regression smoke tests. See `docs/milestone-4-status.md`.
+
 ## Engineering documents
 
-- `ROADMAP.md` — milestones from foundation to production grade.
-- `docs/architecture.md` — component boundaries and design principles.
+- `ROADMAP.md` — long-term milestone plan.
+- `docs/milestone-4-design.md` — M4 design contract.
+- `docs/milestone-4-status.md` — implementation and release-gate status.
+- `docs/architecture.md` — current component/runtime architecture.
 - `docs/threat-model.md` — active security model.
-- `docs/milestone-1-status.md` — completed process-supervisor milestone evidence.
-- `docs/milestone-2-status.md` — completed dashboard milestone evidence.
-- `docs/milestone-3-design.md` — secure tunnel management design boundary.
-- `docs/milestone-3-status.md` — completed M3 verification and closure evidence.
-- `docs/adr/` — architecture decision records.
+- `docs/adr/0004-file-backed-mcp-registry.md` — persistence/path policy.
+- `docs/adr/0005-dynamic-registry-reconciliation.md` — live registry/discovery approval model.
+- `docs/adr/0003-secure-tunnel-supervision.md` — independent tunnel boundary.
 - `CONTRIBUTING.md` — SDLC and development workflow.

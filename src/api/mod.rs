@@ -8,7 +8,7 @@ use axum::{
     },
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{delete, get, post, put},
+    routing::{get, post},
 };
 use serde::Serialize;
 use tokio::sync::broadcast::error::RecvError;
@@ -65,7 +65,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/registry", get(list_registry))
         .route(
             "/api/registry/{id}",
-            get(get_registry).put(update_registry).delete(unregister_mcp),
+            get(get_registry)
+                .put(update_registry)
+                .delete(unregister_mcp),
         )
         .route("/api/registry/{id}/enable", post(enable_mcp))
         .route("/api/registry/{id}/disable", post(disable_mcp))
@@ -245,16 +247,9 @@ async fn register_discovery(
     Ok(Json(view))
 }
 
-async fn require_inactive(
-    supervisor: &Supervisor,
-    id: &str,
-    action: &str,
-) -> Result<(), ApiError> {
+async fn require_inactive(supervisor: &Supervisor, id: &str, action: &str) -> Result<(), ApiError> {
     if supervisor.is_active(id).await? {
-        return Err(StudioError::Conflict(format!(
-            "{id} must be stopped before {action}"
-        ))
-        .into());
+        return Err(StudioError::Conflict(format!("{id} must be stopped before {action}")).into());
     }
     Ok(())
 }
@@ -450,7 +445,8 @@ mod tests {
     };
 
     fn test_router() -> axum::Router {
-        let registry = Registry::in_memory(std::env::current_dir().unwrap(), BTreeMap::new()).unwrap();
+        let registry =
+            Registry::in_memory(std::env::current_dir().unwrap(), BTreeMap::new()).unwrap();
         let supervisor = Supervisor::new(registry.clone(), 32, Duration::from_millis(100));
         let discovery = DiscoveryService::new(registry);
         let tunnel = TunnelSupervisor::new(

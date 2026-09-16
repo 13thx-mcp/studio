@@ -22,7 +22,10 @@ impl TempRoot {
         let path = std::env::temp_dir().join(format!(
             "mcp-studio-m4-{name}-{}-{}",
             std::process::id(),
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         fs::create_dir_all(&path).unwrap();
         Self(path)
@@ -68,7 +71,7 @@ fn discovery_registration_and_mutations_survive_restart() {
     let candidates = discovery.scan().unwrap();
     let candidate = candidates
         .iter()
-        .find(|candidate| candidate.project_path == PathBuf::from("sample"))
+        .find(|candidate| candidate.project_path.as_path() == Path::new("sample"))
         .unwrap();
     assert_eq!(candidate.suggested_id.as_deref(), Some("sample"));
     assert!(!candidate.already_registered);
@@ -132,7 +135,9 @@ fn duplicate_project_registration_is_rejected() {
             },
         )
     };
-    registry.register("sample".into(), make("sample").unwrap()).unwrap();
+    registry
+        .register("sample".into(), make("sample").unwrap())
+        .unwrap();
     let error = make("other").unwrap_err();
     assert!(matches!(error, StudioError::Duplicate(_)));
 }
@@ -145,12 +150,8 @@ fn discovery_ignores_infrastructure_and_hidden_directories() {
     make_rust_project(&root.0, "gateway", "rust-mcp-gateway");
     make_rust_project(&root.0, ".hidden", "hidden");
 
-    let registry = Registry::open(
-        Path::new("."),
-        &registry_config(&root.0),
-        &BTreeMap::new(),
-    )
-    .unwrap();
+    let registry =
+        Registry::open(Path::new("."), &registry_config(&root.0), &BTreeMap::new()).unwrap();
     let paths = DiscoveryService::new(registry)
         .scan()
         .unwrap()
@@ -168,12 +169,8 @@ fn executable_traversal_and_symlink_escape_are_rejected() {
     fs::write(&outside, "fixture").unwrap();
     symlink(&outside, root.0.join("sample/linked-bin")).unwrap();
 
-    let registry = Registry::open(
-        Path::new("."),
-        &registry_config(&root.0),
-        &BTreeMap::new(),
-    )
-    .unwrap();
+    let registry =
+        Registry::open(Path::new("."), &registry_config(&root.0), &BTreeMap::new()).unwrap();
     let discovery = DiscoveryService::new(registry.clone());
     let candidate = discovery.candidate("sample").unwrap();
     let server = discovery
