@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { getLogs, lifecycleAction, listServers } from "./api";
 import { connectRealtime, type ConnectionState } from "./realtime";
-import { actionEnabled, formatUptime, mergeLogEntries } from "./state";
+import { actionEnabled, formatLogMessage, formatUptime, mergeLogEntries } from "./state";
 import type { LogEntry, LogStream, ProcessStatus, StudioEvent } from "./types";
 import "./styles.css";
 
@@ -223,7 +223,7 @@ export default function App() {
                     <div className={`log-line log-${entry.stream}`} key={entry.sequence}>
                       <time>{new Date(entry.timestamp_ms).toLocaleTimeString()}</time>
                       <span className="log-stream">{entry.stream}</span>
-                      <code>{entry.message}</code>
+                      <code>{formatLogMessage(entry.message)}</code>
                     </div>
                   ))}
                 </div>

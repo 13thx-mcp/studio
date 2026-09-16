@@ -446,10 +446,6 @@ impl Supervisor {
         let capacity = self.log_capacity;
         let events = self.events.clone();
         tokio::spawn(async move {
-            // Keep the child's stdin pipe alive while waiting for the process.
-            // Tokio's Child::wait closes an owned stdin handle before waiting;
-            // taking it out and retaining this guard prevents stdio MCP servers
-            // from observing an immediate EOF before an MCP client connects.
             let _stdin_guard = stdin;
             let result = child.wait().await;
             let (status, log_entry) = {
@@ -518,6 +514,60 @@ fn resolve_path(base_dir: &Path, path: &Path) -> PathBuf {
     }
 }
 
+fn strip_ansi(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut output = String::with_capacity(input.len());
+    let mut index = 0;
+
+    while index < bytes.len() {
+        if bytes[index] == 0x1b && index + 1 < bytes.len() {
+            match bytes[index + 1] {
+                b'[' => {
+                    index += 2;
+                    while index < bytes.len() {
+                        let byte = bytes[index];
+                        index += 1;
+                        if (0x40..=0x7e).contains(&byte) {
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                b']' => {
+                    index += 2;
+                    while index < bytes.len() {
+                        if bytes[index] == 0x07 {
+                            index += 1;
+                            break;
+                        }
+                        if bytes[index] == 0x1b
+                            && index + 1 < bytes.len()
+                            && bytes[index + 1] == b'\\'
+                        {
+                            index += 2;
+                            break;
+                        }
+                        index += 1;
+                    }
+                    continue;
+                }
+                _ => {
+                    index += 2;
+                    continue;
+                }
+            }
+        }
+
+        let start = index;
+        while index < bytes.len() && bytes[index] != 0x1b {
+            index += 1;
+        }
+        output.push_str(&input[start..index]);
+    }
+
+    output
+}
+
 fn spawn_log_reader<R>(
     id: String,
     runtime: Arc<Mutex<RuntimeState>>,
@@ -535,7 +585,7 @@ fn spawn_log_reader<R>(
                 Ok(Some(line)) => {
                     let entry = {
                         let mut state = runtime.lock().await;
-                        state.push_log(capacity, stream, line)
+                        state.push_log(capacity, stream, strip_ansi(&line))
                     };
                     events.publish(StudioEvent::Log {
                         mcp_id: id.clone(),
@@ -595,4 +645,23 @@ fn send_kill(_pid: u32) -> StudioResult<()> {
     Err(StudioError::Process(
         "Milestone 1 force-kill currently requires a Unix platform".into(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_ansi;
+
+    #[test]
+    fn strips_ansi_color_and_style_sequences() {
+        let input = "\u{1b}[2m2026-09-16T11:22:29Z\u{1b}[0m \u{1b}[32m INFO\u{1b}[0m \u{1b}[2mrust_mcp_filesystem\u{1b}[0m: starting";
+        assert_eq!(
+            strip_ansi(input),
+            "2026-09-16T11:22:29Z  INFO rust_mcp_filesystem: starting"
+        );
+    }
+
+    #[test]
+    fn preserves_plain_text() {
+        assert_eq!(strip_ansi("plain text"), "plain text");
+    }
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { actionEnabled, formatUptime, mergeLogEntries } from "./state";
+import { actionEnabled, formatLogMessage, formatUptime, mergeLogEntries } from "./state";
 import type { LogEntry, ProcessStatus } from "./types";
 
 const baseStatus: ProcessStatus = {
@@ -37,6 +37,20 @@ describe("formatUptime", () => {
   it("formats null and elapsed time", () => {
     expect(formatUptime(null)).toBe("—");
     expect(formatUptime(3_661_000)).toBe("01:01:01");
+  });
+});
+
+describe("formatLogMessage", () => {
+  it("removes tracing timestamp and level prefixes", () => {
+    expect(
+      formatLogMessage(
+        "2026-09-16T11:25:41.215229Z  INFO rust_mcp_filesystem: starting filesystem MCP server",
+      ),
+    ).toBe("rust_mcp_filesystem: starting filesystem MCP server");
+  });
+
+  it("leaves ordinary log lines unchanged", () => {
+    expect(formatLogMessage("plain child output")).toBe("plain child output");
   });
 });
 

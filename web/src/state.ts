@@ -18,6 +18,13 @@ export function formatUptime(uptimeMs: number | null): string {
     .join(":");
 }
 
+export function formatLogMessage(message: string): string {
+  return message.replace(
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\s+(?:TRACE|DEBUG|INFO|WARN|ERROR)\s+/,
+    "",
+  );
+}
+
 export function actionEnabled(
   status: ProcessStatus,
   action: "start" | "stop" | "restart",
