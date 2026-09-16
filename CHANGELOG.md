@@ -4,11 +4,11 @@ All notable changes to MCP Studio will be documented here.
 
 The project follows Semantic Versioning once public/pre-release artifacts begin.
 
-## [Unreleased]
+## [0.3.0] - 2026-09-16
 
 ### Milestone
 
-- Milestone 3 — Secure Tunnel Management — implementation and automated verification complete; real tunnel runtime smoke verification remains before release closure.
+- Milestone 3 — Secure Tunnel Management — completed and closed.
 
 ### Added
 
@@ -26,7 +26,7 @@ The project follows Semantic Versioning once public/pre-release artifacts begin.
 - Tunnel lifecycle integration tests covering start/stop/restart, PID replacement, duplicate start, stopped-state rejection, invalid runtime, unexpected exits, realtime events, secret redaction, and shutdown cleanup.
 - Frontend verification for tunnel state/actions, log reconciliation, realtime updates, and reconnect snapshot modeling.
 - ADR 0003 documenting secure tunnel supervision and fixed runtime invocation policy.
-- Milestone 3 design and status documentation.
+- Milestone 3 design and closure documentation.
 
 ### Changed
 
@@ -35,7 +35,8 @@ The project follows Semantic Versioning once public/pre-release artifacts begin.
 - Dashboard now visibly separates Studio realtime connection state, MCP lifecycle state, and tunnel lifecycle state.
 - Unexpected tunnel exit is treated as a crash even when the child exits with status `0`; only an explicit-stop exit transitions normally to `stopped`.
 - Tunnel startup validation/secret-resolution failures transition tunnel state to `failed` with `last_error` populated.
-- README, architecture, and threat model now describe active Milestone 3 tunnel management.
+- README, architecture, and threat model now describe active tunnel management.
+- Rust and frontend package versions advanced to `0.3.0`.
 
 ### Verified
 
@@ -51,6 +52,8 @@ The project follows Semantic Versioning once public/pre-release artifacts begin.
 - `pnpm typecheck`
 - `pnpm test`
 - `pnpm build`
+- Real `tunnel-client-runtime-cloudflared` lifecycle smoke test: start, running PID/uptime, restart PID replacement, restart counter, crash counter stability, stop, and PID clearing.
+- Real Studio shutdown cleanup: Studio-owned tunnel PID was no longer present after shutdown.
 
 ### Security
 
@@ -61,11 +64,6 @@ The project follows Semantic Versioning once public/pre-release artifacts begin.
 - Tunnel logs redact resolved secret values and common secret-bearing fields before storage/streaming.
 - Tunnel lifecycle browser mutations retain same-origin enforcement.
 - Studio remains loopback-only.
-
-### Pending release verification
-
-- Real `tunnel-client-runtime-cloudflared` start / restart / stop smoke test.
-- Real Studio shutdown cleanup verification for the Studio-owned tunnel process.
 
 ## [0.2.0] - 2026-09-16
 

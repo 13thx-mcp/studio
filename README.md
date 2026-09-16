@@ -4,9 +4,7 @@ Local-first web control plane for monitoring and managing MCP servers and the co
 
 ## Current status
 
-Milestone 3 — Secure Tunnel Management is implemented on `feature/secure-tunnel-management`.
-
-Automated Rust and frontend release gates pass. The remaining Milestone 3 release gate is the manual real-runtime smoke test with `../tunnel-client/tunnel-client-runtime-cloudflared`; `v0.3.0` is not considered released until that smoke test succeeds.
+Milestone 3 — Secure Tunnel Management is complete and released as `v0.3.0`.
 
 Current capabilities include:
 
@@ -293,6 +291,6 @@ pnpm build
 - `docs/milestone-1-status.md` — completed process-supervisor milestone evidence.
 - `docs/milestone-2-status.md` — completed dashboard milestone evidence.
 - `docs/milestone-3-design.md` — secure tunnel management design boundary.
-- `docs/milestone-3-status.md` — current M3 verification and closure status.
+- `docs/milestone-3-status.md` — completed M3 verification and closure evidence.
 - `docs/adr/` — architecture decision records.
 - `CONTRIBUTING.md` — SDLC and development workflow.

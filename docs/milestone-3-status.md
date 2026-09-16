@@ -2,24 +2,22 @@
 
 ## Status
 
-**IMPLEMENTATION COMPLETE — automated release gates passed on 2026-09-16; real tunnel runtime smoke verification remains required before closure.**
+**COMPLETE — automated release gates and real tunnel runtime smoke verification passed on 2026-09-16.**
 
-Target version: `v0.3.0`
-
-Current branch: `feature/secure-tunnel-management`
+Released version: `v0.3.0`
 
 ## Implemented
 
 ### Tunnel lifecycle domain
 
-- Added a dedicated `TunnelSupervisor` separate from the MCP `Supervisor`.
-- Added tunnel lifecycle states: stopped, starting, running, stopping, and failed.
-- Added start, stop, and restart operations.
-- Added Studio-owned PID tracking and signal ownership rules.
-- Added tunnel uptime, restart count, crash count, last exit code, and last runtime error.
+- Dedicated `TunnelSupervisor` separate from the MCP `Supervisor`.
+- Tunnel lifecycle states: stopped, starting, running, stopping, and failed.
+- Start, stop, and restart operations.
+- Studio-owned PID tracking and signal ownership rules.
+- Tunnel uptime, restart count, crash count, last exit code, and last runtime error.
 - Unexpected tunnel exits are treated as crashes even when the child exits with status `0`; only explicit-stop exits become `stopped`.
 - Studio graceful shutdown stops the Studio-owned tunnel process.
-- Added generation guarding so stale monitor tasks cannot overwrite newer tunnel runtime state.
+- Generation guarding prevents stale monitor tasks from overwriting newer tunnel runtime state.
 
 ### Constrained runtime configuration
 
@@ -34,7 +32,7 @@ Current branch: `feature/secure-tunnel-management`
 
 ### Secret handling and logs
 
-- Added optional server-side environment/file secret references.
+- Optional server-side environment/file secret references.
 - Resolved secret values are used only for child environment construction and log redaction.
 - Secret references and values are not serialized in `TunnelStatus`.
 - Tunnel stdout/stderr/Studio lifecycle logs use a bounded in-memory ring buffer.
@@ -43,8 +41,6 @@ Current branch: `feature/secure-tunnel-management`
 - Common secret-bearing fields such as token, secret, password, credential, and authorization are redacted from tunnel log lines.
 
 ### REST API
-
-Added:
 
 ```text
 GET  /api/tunnel
@@ -58,23 +54,23 @@ Tunnel lifecycle mutations use the same same-origin browser policy as MCP lifecy
 
 ### Realtime model
 
-Added typed WebSocket events:
+Typed WebSocket events:
 
 ```text
 tunnel_status
 tunnel_log
 ```
 
-The initial/recovery `snapshot` now contains both MCP process status and tunnel status.
+The initial/recovery `snapshot` contains both MCP process status and tunnel status.
 
 MCP and tunnel lifecycle publishers remain separate bounded event domains; the WebSocket layer multiplexes them into one typed browser protocol.
 
 ### Dashboard
 
-- Added a secure tunnel section with state, runtime availability, PID, uptime, restart count, crash count, last exit, and last error.
-- Added tunnel start / restart / stop controls.
-- Added realtime tunnel status updates.
-- Added recent tunnel log rendering.
+- Secure tunnel section with state, runtime availability, PID, uptime, restart count, crash count, last exit, and last error.
+- Tunnel start / restart / stop controls.
+- Realtime tunnel status updates.
+- Recent tunnel log rendering.
 - Reconnect/resync snapshots reconcile tunnel state as well as MCP state.
 - Studio realtime connection state, MCP lifecycle state, and tunnel lifecycle state are visibly distinct.
 - Frontend tunnel types intentionally exclude runtime path, config path, secret references, and secret values.
@@ -88,7 +84,7 @@ MCP and tunnel lifecycle publishers remain separate bounded event domains; the W
 
 ## Automated Verification
 
-The complete automated Milestone 3 release gates passed from the current feature-branch source state on 2026-09-16.
+The complete Milestone 3 release gates passed on 2026-09-16.
 
 ### Rust
 
@@ -117,7 +113,7 @@ Tunnel lifecycle integration coverage includes:
 - exact secret-value redaction;
 - Studio shutdown cleanup.
 
-The tunnel lifecycle suite was also rerun repeatedly under the default parallel test runner after fixing temp-fixture isolation; repeated runs passed.
+The tunnel lifecycle suite was also rerun repeatedly under the default parallel test runner after fixture-isolation hardening; repeated runs passed.
 
 ### Frontend
 
@@ -136,40 +132,51 @@ Frontend verification includes tunnel lifecycle state rendering helpers, action 
 
 ## Real Runtime Smoke Verification
 
-**PENDING.**
-
-The required smoke test must use:
+The smoke test used the actual:
 
 ```text
 mcp-server/tunnel-client/tunnel-client-runtime-cloudflared
 ```
 
-Required observations:
+A smoke-specific config used a non-conflicting local health listener while preserving the real runtime binary and normal tunnel-client behavior.
+
+Observed lifecycle:
 
 ```text
+initial
+state=stopped
+runtime_available=true
+pid=null
+restart_count=0
+crash_count=0
+
 start
-→ running
-→ PID present
-→ uptime advances
-→ logs visible
+state=running
+pid=20095
+uptime advanced from 0 ms to 13 ms
+runtime log buffer contained Studio start entry
 
 restart
-→ PID changes
-→ restart_count increments
-→ crash_count remains correct
+old pid=20095
+new pid=20099
+restart_count=1
+crash_count=0
 
 stop
-→ stopped
-→ PID cleared
+state=stopped
+pid=null
+restart_count=1
+crash_count=0
 ```
 
-Studio shutdown must also terminate a tunnel process that Studio owns.
+Studio shutdown cleanup was then verified with a new Studio-owned tunnel PID `20277`. After Studio shutdown:
 
-### Important operational constraint
+```text
+kill -0 20277
+→ no such process
+```
 
-The current Aira Workspace connection itself may be using the same `tunnel-client` configuration and health listener (`127.0.0.1:18080`). Do not start a second Studio-managed instance against the same live config while that runtime is active, because the health listener or tunnel identity may conflict.
-
-For closure, perform the smoke test in a controlled window where the existing tunnel runtime is stopped, or with an explicitly prepared smoke configuration whose local listener values do not conflict while preserving the same runtime binary and normal tunnel-client behavior.
+Result: **PASS**.
 
 ## Exit Criteria
 
@@ -185,20 +192,23 @@ For closure, perform the smoke test in a controlled window where the existing tu
 - Frontend quality gates pass. **PASS**
 - Dependency audit passes. **PASS**
 - Locked release build succeeds. **PASS**
-- Real tunnel runtime start/restart/stop smoke test. **PENDING**
-- Studio shutdown cleanup with real tunnel runtime. **PENDING**
+- Real tunnel runtime start/restart/stop smoke test. **PASS**
+- Studio shutdown cleanup with real tunnel runtime. **PASS**
 
 ## Closure Decision
 
-Milestone 3 is **not yet formally closed**. Implementation and automated verification are complete, but the roadmap Definition of Done requires the real runtime smoke test before release preparation, merge, and tag.
+Milestone 3 is formally closed because:
 
-After the smoke test passes:
+- the real tunnel runtime can be started, restarted, stopped, and observed through Studio;
+- restart replaces the PID and increments the restart counter without falsely incrementing crash count;
+- Studio shutdown cleans up the tunnel PID it owns;
+- the browser/API surface does not expose arbitrary executable/argv/PID control;
+- tunnel secret values remain server-side and are redacted from tunnel logs;
+- same-origin and loopback-only control-plane protections remain enforced;
+- Rust and frontend automated release gates pass;
+- dependency audit and locked release build pass;
+- architecture, threat-model, ADR, and operational documentation reflect the verified implementation.
 
-1. update this document to `COMPLETE`;
-2. advance Rust/frontend package versions to `0.3.0`;
-3. finalize the `0.3.0` changelog entry;
-4. create `chore(release): prepare v0.3.0`;
-5. pass dev-git-control readiness;
-6. merge `feature/secure-tunnel-management` into `main` with `--no-ff` semantics;
-7. create annotated release tag `v0.3.0`;
-8. delete the merged feature branch.
+## Next Milestone
+
+Proceed to **Milestone 4 — Registry, Configuration & Auto-Discovery** only after the `v0.3.0` release merge/tag workflow is complete.

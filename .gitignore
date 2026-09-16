@@ -39,8 +39,10 @@ secrets/
 # Local Studio configuration
 studio.toml
 studio.local.toml
+studio.smoke.toml
 config.local.toml
 config.override.toml
+tunnel-smoke.yaml
 !studio.example.toml
 
 # Frontend dependencies / build output
