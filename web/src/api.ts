@@ -1,4 +1,13 @@
-import type { LogEntry, ProcessStatus, TunnelLogEntry, TunnelStatus } from "./types";
+import type {
+  DiscoveredProject,
+  LogEntry,
+  ProcessStatus,
+  RegisterDiscoveryRequest,
+  RegistryEntry,
+  RegistryUpdate,
+  TunnelLogEntry,
+  TunnelStatus,
+} from "./types";
 
 async function readJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
@@ -29,6 +38,49 @@ export function lifecycleAction(
   return fetch(`/api/mcp/${encodeURIComponent(id)}/${action}`, { method: "POST" }).then(
     readJson<ProcessStatus>,
   );
+}
+
+export function listRegistry(): Promise<RegistryEntry[]> {
+  return fetch("/api/registry").then(readJson<RegistryEntry[]>);
+}
+
+export function updateRegistry(id: string, update: RegistryUpdate): Promise<RegistryEntry> {
+  return fetch(`/api/registry/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(update),
+  }).then(readJson<RegistryEntry>);
+}
+
+export function setRegistryEnabled(id: string, enabled: boolean): Promise<RegistryEntry> {
+  return fetch(`/api/registry/${encodeURIComponent(id)}/${enabled ? "enable" : "disable"}`, {
+    method: "POST",
+  }).then(readJson<RegistryEntry>);
+}
+
+export function unregisterRegistry(id: string): Promise<RegistryEntry> {
+  return fetch(`/api/registry/${encodeURIComponent(id)}`, { method: "DELETE" }).then(
+    readJson<RegistryEntry>,
+  );
+}
+
+export function listDiscovery(): Promise<DiscoveredProject[]> {
+  return fetch("/api/discovery").then(readJson<DiscoveredProject[]>);
+}
+
+export function scanDiscovery(): Promise<DiscoveredProject[]> {
+  return fetch("/api/discovery/scan", { method: "POST" }).then(readJson<DiscoveredProject[]>);
+}
+
+export function registerDiscovery(
+  candidateId: string,
+  request: RegisterDiscoveryRequest,
+): Promise<RegistryEntry> {
+  return fetch(`/api/discovery/${encodeURIComponent(candidateId)}/register`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(request),
+  }).then(readJson<RegistryEntry>);
 }
 
 export function getTunnel(): Promise<TunnelStatus> {

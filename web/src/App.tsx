@@ -5,15 +5,24 @@ import {
   getTunnel,
   getTunnelLogs,
   lifecycleAction,
+  listDiscovery,
+  listRegistry,
   listServers,
+  registerDiscovery,
+  scanDiscovery,
+  setRegistryEnabled,
   tunnelLifecycleAction,
+  unregisterRegistry,
+  updateRegistry,
 } from "./api";
 import { connectRealtime, type ConnectionState } from "./realtime";
 import { actionEnabled, formatLogMessage, formatUptime, mergeLogEntries } from "./state";
 import type {
+  DiscoveredProject,
   LogEntry,
   LogStream,
   ProcessStatus,
+  RegistryEntry,
   StudioEvent,
   TunnelLogEntry,
   TunnelStatus,
@@ -26,6 +35,8 @@ export default function App() {
   const [servers, setServers] = useState<Record<string, ProcessStatus>>({});
   const [logs, setLogs] = useState<Record<string, LogEntry[]>>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [registry, setRegistry] = useState<RegistryEntry[]>([]);
+  const [discovery, setDiscovery] = useState<DiscoveredProject[]>([]);
   const [tunnel, setTunnel] = useState<TunnelStatus | null>(null);
   const [tunnelLogs, setTunnelLogs] = useState<TunnelLogEntry[]>([]);
   const [connection, setConnection] = useState<ConnectionState>("connecting");
@@ -37,17 +48,24 @@ export default function App() {
   const logViewerRef = useRef<HTMLDivElement | null>(null);
   const tunnelLogViewerRef = useRef<HTMLDivElement | null>(null);
 
+  const refreshRuntime = async () => {
+    const [serverResult, tunnelResult, tunnelLogResult] = await Promise.all([
+      listServers(),
+      getTunnel(),
+      getTunnelLogs(),
+    ]);
+    setServers(Object.fromEntries(serverResult.map((server) => [server.id, server])));
+    setSelectedId((current) => current ?? serverResult[0]?.id ?? null);
+    setTunnel(tunnelResult);
+    setTunnelLogs((current) => mergeLogEntries(current, tunnelLogResult));
+  };
+
+  const refreshRegistry = async () => setRegistry(await listRegistry());
+  const refreshDiscovery = async () => setDiscovery(await listDiscovery());
+
   const refreshAll = async () => {
     try {
-      const [serverResult, tunnelResult, tunnelLogResult] = await Promise.all([
-        listServers(),
-        getTunnel(),
-        getTunnelLogs(),
-      ]);
-      setServers(Object.fromEntries(serverResult.map((server) => [server.id, server])));
-      setSelectedId((current) => current ?? serverResult[0]?.id ?? null);
-      setTunnel(tunnelResult);
-      setTunnelLogs((current) => mergeLogEntries(current, tunnelLogResult));
+      await Promise.all([refreshRuntime(), refreshRegistry(), refreshDiscovery()]);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     }
@@ -77,6 +95,16 @@ export default function App() {
     }
     if (event.type === "tunnel_log") {
       setTunnelLogs((current) => mergeLogEntries(current, [event.entry]));
+      return;
+    }
+    if (event.type === "registry_changed") {
+      void Promise.all([refreshRegistry(), listServers().then((items) => {
+        setServers(Object.fromEntries(items.map((server) => [server.id, server])));
+      })]);
+      return;
+    }
+    if (event.type === "discovery_changed") {
+      void refreshDiscovery();
       return;
     }
     if (event.type === "resync_required") {
@@ -155,6 +183,90 @@ export default function App() {
     }
   };
 
+  const toggleRegistry = async (entry: RegistryEntry) => {
+    setPending(`registry:${entry.id}:toggle`);
+    setError(null);
+    try {
+      await setRegistryEnabled(entry.id, !entry.enabled);
+      await Promise.all([refreshRegistry(), refreshRuntime()]);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setPending(null);
+    }
+  };
+
+  const editRegistry = async (entry: RegistryEntry) => {
+    const name = window.prompt("Display name", entry.name);
+    if (name === null) return;
+    const executable = window.prompt("Project-relative executable", entry.executable);
+    if (executable === null) return;
+    const workingDir = window.prompt("Project-relative working directory", entry.working_dir);
+    if (workingDir === null) return;
+    const argsText = window.prompt("Arguments (one per line)", entry.args.join("\n"));
+    if (argsText === null) return;
+    setPending(`registry:${entry.id}:edit`);
+    setError(null);
+    try {
+      await updateRegistry(entry.id, {
+        name,
+        executable,
+        working_dir: workingDir,
+        args: argsText.length === 0 ? [] : argsText.split("\n"),
+      });
+      await Promise.all([refreshRegistry(), refreshRuntime()]);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setPending(null);
+    }
+  };
+
+  const unregister = async (entry: RegistryEntry) => {
+    if (!window.confirm(`Unregister ${entry.name} (${entry.id})? Project files will not be deleted.`)) return;
+    setPending(`registry:${entry.id}:unregister`);
+    setError(null);
+    try {
+      await unregisterRegistry(entry.id);
+      await Promise.all([refreshRegistry(), refreshDiscovery(), refreshRuntime()]);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setPending(null);
+    }
+  };
+
+  const scan = async () => {
+    setPending("discovery:scan");
+    setError(null);
+    try {
+      setDiscovery(await scanDiscovery());
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setPending(null);
+    }
+  };
+
+  const register = async (candidate: DiscoveredProject) => {
+    const executable = candidate.executable_candidates[0];
+    if (!candidate.suggested_id || !executable || !candidate.runtime) return;
+    const id = window.prompt("Stable MCP id", candidate.suggested_id);
+    if (!id) return;
+    const name = window.prompt("Display name", candidate.name);
+    if (name === null) return;
+    setPending(`discovery:${candidate.candidate_id}:register`);
+    setError(null);
+    try {
+      await registerDiscovery(candidate.candidate_id, { id, name, executable });
+      await Promise.all([refreshRegistry(), refreshDiscovery(), refreshRuntime()]);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setPending(null);
+    }
+  };
+
   const displayedUptime = selected?.state === "running" && selected.uptime_ms !== null
     ? selected.uptime_ms + uptimeTick * 1000
     : selected?.uptime_ms ?? null;
@@ -165,147 +277,67 @@ export default function App() {
   return (
     <main className="shell">
       <header className="topbar">
-        <div>
-          <p className="eyebrow">Local control plane</p>
-          <h1>MCP Studio</h1>
-        </div>
-        <div className="connection-group">
-          <span className="eyebrow">Studio realtime</span>
-          <span className={`connection connection-${connection}`}>{connection}</span>
-        </div>
+        <div><p className="eyebrow">Local control plane</p><h1>MCP Studio</h1></div>
+        <div className="connection-group"><span className="eyebrow">Studio realtime</span><span className={`connection connection-${connection}`}>{connection}</span></div>
       </header>
 
       {error && <div className="error-banner">{error}</div>}
 
       <section className="summary-grid" aria-label="Studio summary">
-        <article className="summary-card"><span>MCP managed</span><strong>{serverList.length}</strong></article>
+        <article className="summary-card"><span>MCP registered</span><strong>{registry.length}</strong></article>
         <article className="summary-card"><span>MCP running</span><strong>{running}</strong></article>
         <article className="summary-card"><span>MCP failed</span><strong>{failed}</strong></article>
         <article className="summary-card"><span>Tunnel</span><strong>{tunnel?.state ?? "loading"}</strong></article>
       </section>
 
       <section className="detail-panel tunnel-panel" aria-label="Secure tunnel">
-        <div className="detail-header">
-          <div>
-            <p className="eyebrow">Secure tunnel</p>
-            <h2>{tunnel?.name ?? "Tunnel"}</h2>
-          </div>
-          {tunnel && <span className={`state state-${tunnel.state}`}>{tunnel.state}</span>}
-        </div>
-        {tunnel && (
-          <>
-            <dl className="metric-grid">
-              <div><dt>Runtime</dt><dd>{tunnel.runtime_available ? "available" : "unavailable"}</dd></div>
-              <div><dt>PID</dt><dd>{tunnel.pid ?? "—"}</dd></div>
-              <div><dt>Uptime</dt><dd>{formatUptime(displayedTunnelUptime)}</dd></div>
-              <div><dt>Restarts</dt><dd>{tunnel.restart_count}</dd></div>
-              <div><dt>Crashes</dt><dd>{tunnel.crash_count}</dd></div>
-              <div><dt>Last exit</dt><dd>{tunnel.last_exit_code ?? "—"}</dd></div>
-              <div><dt>Last error</dt><dd>{tunnel.last_error ?? "—"}</dd></div>
-            </dl>
-            <div className="actions">
-              {(["start", "restart", "stop"] as const).map((action) => (
-                <button
-                  key={action}
-                  disabled={!actionEnabled(tunnel, action) || pending !== null || !tunnel.runtime_available}
-                  onClick={() => void runTunnelAction(action)}
-                >
-                  {pending === `tunnel:${action}` ? `${action}…` : action}
-                </button>
-              ))}
-            </div>
-            <section className="logs">
-              <div className="logs-header">
-                <div><h3>Tunnel logs</h3><span>{tunnelLogs.length} recent</span></div>
-              </div>
-              <div className="log-viewer" ref={tunnelLogViewerRef}>
-                {tunnelLogs.length === 0 && <p className="log-empty">No tunnel logs yet.</p>}
-                {tunnelLogs.map((entry) => (
-                  <div className={`log-line log-${entry.stream}`} key={entry.sequence}>
-                    <time>{new Date(entry.timestamp_ms).toLocaleTimeString()}</time>
-                    <span className="log-stream">{entry.stream}</span>
-                    <code>{formatLogMessage(entry.message)}</code>
-                  </div>
-                ))}
-              </div>
-            </section>
-          </>
-        )}
+        <div className="detail-header"><div><p className="eyebrow">Secure tunnel</p><h2>{tunnel?.name ?? "Tunnel"}</h2></div>{tunnel && <span className={`state state-${tunnel.state}`}>{tunnel.state}</span>}</div>
+        {tunnel && <>
+          <dl className="metric-grid">
+            <div><dt>Runtime</dt><dd>{tunnel.runtime_available ? "available" : "unavailable"}</dd></div><div><dt>PID</dt><dd>{tunnel.pid ?? "—"}</dd></div><div><dt>Uptime</dt><dd>{formatUptime(displayedTunnelUptime)}</dd></div><div><dt>Restarts</dt><dd>{tunnel.restart_count}</dd></div><div><dt>Crashes</dt><dd>{tunnel.crash_count}</dd></div><div><dt>Last exit</dt><dd>{tunnel.last_exit_code ?? "—"}</dd></div><div><dt>Last error</dt><dd>{tunnel.last_error ?? "—"}</dd></div>
+          </dl>
+          <div className="actions">{(["start", "restart", "stop"] as const).map((action) => <button key={action} disabled={!actionEnabled(tunnel, action) || pending !== null || !tunnel.runtime_available} onClick={() => void runTunnelAction(action)}>{pending === `tunnel:${action}` ? `${action}…` : action}</button>)}</div>
+          <section className="logs"><div className="logs-header"><div><h3>Tunnel logs</h3><span>{tunnelLogs.length} recent</span></div></div><div className="log-viewer" ref={tunnelLogViewerRef}>{tunnelLogs.length === 0 && <p className="log-empty">No tunnel logs yet.</p>}{tunnelLogs.map((entry) => <div className={`log-line log-${entry.stream}`} key={entry.sequence}><time>{new Date(entry.timestamp_ms).toLocaleTimeString()}</time><span className="log-stream">{entry.stream}</span><code>{formatLogMessage(entry.message)}</code></div>)}</div></section>
+        </>}
       </section>
 
       <section className="workspace">
-        <aside className="server-list">
-          <h2>MCP servers</h2>
-          {serverList.map((server) => (
-            <button
-              className={`server-row ${server.id === selectedId ? "selected" : ""}`}
-              key={server.id}
-              onClick={() => setSelectedId(server.id)}
-            >
-              <span><strong>{server.name}</strong><small>{server.id}</small></span>
-              <span className={`state state-${server.state}`}>{server.state}</span>
-            </button>
-          ))}
-        </aside>
-
+        <aside className="server-list"><h2>MCP servers</h2>{serverList.map((server) => <button className={`server-row ${server.id === selectedId ? "selected" : ""}`} key={server.id} onClick={() => setSelectedId(server.id)}><span><strong>{server.name}</strong><small>{server.id}</small></span><span className={`state state-${server.state}`}>{server.state}</span></button>)}</aside>
         <section className="detail-panel">
-          {!selected ? (
-            <div className="empty-state">No MCP server selected.</div>
-          ) : (
-            <>
-              <div className="detail-header">
-                <div><p className="eyebrow">MCP server · {selected.id}</p><h2>{selected.name}</h2></div>
-                <span className={`state state-${selected.state}`}>{selected.state}</span>
-              </div>
-              <dl className="metric-grid">
-                <div><dt>PID</dt><dd>{selected.pid ?? "—"}</dd></div>
-                <div><dt>Uptime</dt><dd>{formatUptime(displayedUptime)}</dd></div>
-                <div><dt>Restarts</dt><dd>{selected.restart_count}</dd></div>
-                <div><dt>Crashes</dt><dd>{selected.crash_count}</dd></div>
-                <div><dt>Last exit</dt><dd>{selected.last_exit_code ?? "—"}</dd></div>
-                <div><dt>Last error</dt><dd>{selected.last_error ?? "—"}</dd></div>
-              </dl>
-              <div className="actions">
-                {(["start", "restart", "stop"] as const).map((action) => (
-                  <button
-                    key={action}
-                    disabled={!actionEnabled(selected, action) || pending !== null}
-                    onClick={() => void runMcpAction(selected, action)}
-                  >
-                    {pending === `${selected.id}:${action}` ? `${action}…` : action}
-                  </button>
-                ))}
-              </div>
-              <section className="logs">
-                <div className="logs-header">
-                  <div><h3>Recent MCP logs</h3><span>{visibleLogs.length} visible / {selectedLogs.length} total</span></div>
-                  <div className="log-controls">
-                    <label>Stream
-                      <select value={logFilter} onChange={(event) => setLogFilter(event.target.value as LogFilter)}>
-                        <option value="all">All</option><option value="stdout">stdout</option>
-                        <option value="stderr">stderr</option><option value="studio">studio</option>
-                      </select>
-                    </label>
-                    <label className="toggle-control">
-                      <input type="checkbox" checked={autoScroll} onChange={(event) => setAutoScroll(event.target.checked)} />
-                      Auto-scroll
-                    </label>
-                  </div>
-                </div>
-                <div className="log-viewer" ref={logViewerRef}>
-                  {visibleLogs.length === 0 && <p className="log-empty">No logs in this view.</p>}
-                  {visibleLogs.map((entry) => (
-                    <div className={`log-line log-${entry.stream}`} key={entry.sequence}>
-                      <time>{new Date(entry.timestamp_ms).toLocaleTimeString()}</time>
-                      <span className="log-stream">{entry.stream}</span>
-                      <code>{formatLogMessage(entry.message)}</code>
-                    </div>
-                  ))}
-                </div>
-              </section>
-            </>
-          )}
+          {!selected ? <div className="empty-state">No MCP server selected.</div> : <>
+            <div className="detail-header"><div><p className="eyebrow">MCP server · {selected.id}</p><h2>{selected.name}</h2></div><span className={`state state-${selected.state}`}>{selected.state}</span></div>
+            <dl className="metric-grid"><div><dt>PID</dt><dd>{selected.pid ?? "—"}</dd></div><div><dt>Uptime</dt><dd>{formatUptime(displayedUptime)}</dd></div><div><dt>Restarts</dt><dd>{selected.restart_count}</dd></div><div><dt>Crashes</dt><dd>{selected.crash_count}</dd></div><div><dt>Last exit</dt><dd>{selected.last_exit_code ?? "—"}</dd></div><div><dt>Last error</dt><dd>{selected.last_error ?? "—"}</dd></div></dl>
+            <div className="actions">{(["start", "restart", "stop"] as const).map((action) => <button key={action} disabled={!actionEnabled(selected, action) || pending !== null || registry.find((entry) => entry.id === selected.id)?.enabled === false} onClick={() => void runMcpAction(selected, action)}>{pending === `${selected.id}:${action}` ? `${action}…` : action}</button>)}</div>
+            <section className="logs"><div className="logs-header"><div><h3>Recent MCP logs</h3><span>{visibleLogs.length} visible / {selectedLogs.length} total</span></div><div className="log-controls"><label>Stream<select value={logFilter} onChange={(event) => setLogFilter(event.target.value as LogFilter)}><option value="all">All</option><option value="stdout">stdout</option><option value="stderr">stderr</option><option value="studio">studio</option></select></label><label className="toggle-control"><input type="checkbox" checked={autoScroll} onChange={(event) => setAutoScroll(event.target.checked)} />Auto-scroll</label></div></div><div className="log-viewer" ref={logViewerRef}>{visibleLogs.length === 0 && <p className="log-empty">No logs in this view.</p>}{visibleLogs.map((entry) => <div className={`log-line log-${entry.stream}`} key={entry.sequence}><time>{new Date(entry.timestamp_ms).toLocaleTimeString()}</time><span className="log-stream">{entry.stream}</span><code>{formatLogMessage(entry.message)}</code></div>)}</div></section>
+          </>}
         </section>
+      </section>
+
+      <section className="detail-panel" aria-label="MCP registry">
+        <div className="detail-header"><div><p className="eyebrow">Persistent configuration</p><h2>Registry</h2></div><span>{registry.length} entries</span></div>
+        <div className="registry-grid">
+          {registry.map((entry) => {
+            const runtime = servers[entry.id];
+            const active = runtime && ["starting", "running", "stopping"].includes(runtime.state);
+            return <article className="registry-card" key={entry.id}>
+              <div className="detail-header"><div><strong>{entry.name}</strong><small>{entry.id} · {entry.runtime}</small></div><span className={`state ${entry.enabled ? "state-running" : "state-stopped"}`}>{entry.enabled ? "enabled" : "disabled"}</span></div>
+              <dl className="metric-grid"><div><dt>Project</dt><dd>{entry.project_path}</dd></div><div><dt>Executable</dt><dd>{entry.executable}</dd></div><div><dt>Working dir</dt><dd>{entry.working_dir}</dd></div><div><dt>Runtime state</dt><dd>{runtime?.state ?? "stopped"}</dd></div></dl>
+              <div className="actions"><button disabled={pending !== null || Boolean(active)} onClick={() => void editRegistry(entry)}>edit</button><button disabled={pending !== null || Boolean(active)} onClick={() => void toggleRegistry(entry)}>{entry.enabled ? "disable" : "enable"}</button><button disabled={pending !== null || Boolean(active)} onClick={() => void unregister(entry)}>unregister</button></div>
+            </article>;
+          })}
+        </div>
+      </section>
+
+      <section className="detail-panel" aria-label="MCP discovery">
+        <div className="detail-header"><div><p className="eyebrow">Metadata-only scan</p><h2>Discovery</h2></div><button disabled={pending !== null} onClick={() => void scan()}>{pending === "discovery:scan" ? "scanning…" : "scan"}</button></div>
+        <div className="registry-grid">
+          {discovery.map((candidate) => <article className="registry-card" key={candidate.candidate_id}>
+            <div className="detail-header"><div><strong>{candidate.name}</strong><small>{candidate.project_path}</small></div><span>{candidate.runtime ?? "unsupported"}</span></div>
+            <dl className="metric-grid"><div><dt>Manifest</dt><dd>{candidate.manifest ?? "—"}</dd></div><div><dt>Suggested ID</dt><dd>{candidate.suggested_id ?? "—"}</dd></div><div><dt>Executable</dt><dd>{candidate.executable_candidates[0] ?? "—"}</dd></div><div><dt>Status</dt><dd>{candidate.already_registered ? "registered" : "available"}</dd></div></dl>
+            {candidate.warnings.length > 0 && <p className="log-empty">{candidate.warnings.join(" · ")}</p>}
+            <div className="actions"><button disabled={pending !== null || candidate.already_registered || !candidate.runtime || !candidate.suggested_id || candidate.executable_candidates.length === 0} onClick={() => void register(candidate)}>review & register</button></div>
+          </article>)}
+        </div>
       </section>
     </main>
   );

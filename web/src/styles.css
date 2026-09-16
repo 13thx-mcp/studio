@@ -25,7 +25,7 @@ button, select, input { font: inherit; }
 .summary-card span { color: #8f9bab; font-size: 13px; }
 .summary-card strong { font-size: 28px; }
 
-.workspace { display: grid; grid-template-columns: 300px minmax(0,1fr); min-height: 620px; border: 1px solid #222a33; border-radius: 16px; overflow: hidden; background: #0f141a; }
+.workspace { display: grid; grid-template-columns: 300px minmax(0,1fr); min-height: 620px; margin-bottom: 20px; border: 1px solid #222a33; border-radius: 16px; overflow: hidden; background: #0f141a; }
 .server-list { padding: 20px; border-right: 1px solid #222a33; background: #0d1218; }
 .server-list h2 { font-size: 14px; color: #aab4c0; margin-bottom: 12px; }
 .server-row { width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 12px; margin-bottom: 8px; border: 1px solid transparent; border-radius: 10px; background: transparent; color: inherit; text-align: left; cursor: pointer; }
@@ -34,16 +34,28 @@ button, select, input { font: inherit; }
 .server-row small { color: #7e8997; }
 
 .detail-panel { padding: 28px; min-width: 0; }
+.tunnel-panel,
+.detail-panel[aria-label="MCP registry"],
+.detail-panel[aria-label="MCP discovery"] { margin-bottom: 20px; border: 1px solid #222a33; border-radius: 16px; background: #0f141a; }
 .detail-header { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 24px; }
+.detail-header > div { min-width: 0; }
 .metric-grid { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 12px; margin: 0 0 20px; }
 .metric-grid > div { min-width: 0; border: 1px solid #222a33; border-radius: 12px; padding: 14px; background: #11171e; }
 .metric-grid dt { color: #83909e; font-size: 12px; margin-bottom: 6px; }
 .metric-grid dd { margin: 0; overflow-wrap: anywhere; }
-.actions { display: flex; gap: 10px; margin-bottom: 26px; }
-.actions button, .secondary-button { border: 1px solid #35404d; border-radius: 9px; padding: 9px 14px; background: #171e27; color: #e7ecf3; cursor: pointer; }
+.actions { display: flex; gap: 10px; margin-bottom: 26px; flex-wrap: wrap; }
+.actions button, .secondary-button, .detail-header > button { border: 1px solid #35404d; border-radius: 9px; padding: 9px 14px; background: #171e27; color: #e7ecf3; cursor: pointer; }
 .actions button { text-transform: capitalize; }
-.actions button:hover:not(:disabled), .secondary-button:hover { background: #202936; }
-.actions button:disabled { opacity: .45; cursor: not-allowed; }
+.actions button:hover:not(:disabled), .secondary-button:hover, .detail-header > button:hover:not(:disabled) { background: #202936; }
+.actions button:disabled, .detail-header > button:disabled { opacity: .45; cursor: not-allowed; }
+
+.registry-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.registry-card { min-width: 0; border: 1px solid #222a33; border-radius: 14px; padding: 18px; background: #0d1218; }
+.registry-card .detail-header { margin-bottom: 16px; }
+.registry-card .detail-header > div { display: flex; flex-direction: column; gap: 4px; }
+.registry-card small { color: #7e8997; overflow-wrap: anywhere; }
+.registry-card .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.registry-card .actions { margin-bottom: 0; }
 
 .logs { border-top: 1px solid #222a33; padding-top: 20px; }
 .logs-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 10px; }
@@ -67,8 +79,12 @@ button, select, input { font: inherit; }
   .summary-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
   .workspace { grid-template-columns: 1fr; }
   .server-list { border-right: 0; border-bottom: 1px solid #222a33; }
-  .metric-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
+  .metric-grid, .registry-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
   .logs-header { align-items: flex-start; flex-direction: column; }
+}
+
+@media (max-width: 680px) {
+  .registry-grid, .registry-card .metric-grid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 560px) {
