@@ -1,4 +1,4 @@
-import type { LogEntry, ProcessStatus } from "./types";
+import type { LogEntry, ProcessStatus, TunnelLogEntry, TunnelStatus } from "./types";
 
 async function readJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
@@ -18,10 +18,6 @@ export function listServers(): Promise<ProcessStatus[]> {
   return fetch("/api/mcp").then(readJson<ProcessStatus[]>);
 }
 
-export function getServer(id: string): Promise<ProcessStatus> {
-  return fetch(`/api/mcp/${encodeURIComponent(id)}`).then(readJson<ProcessStatus>);
-}
-
 export function getLogs(id: string): Promise<LogEntry[]> {
   return fetch(`/api/mcp/${encodeURIComponent(id)}/logs`).then(readJson<LogEntry[]>);
 }
@@ -30,8 +26,21 @@ export function lifecycleAction(
   id: string,
   action: "start" | "stop" | "restart",
 ): Promise<ProcessStatus> {
-  return fetch(`/api/mcp/${encodeURIComponent(id)}/${action}`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-  }).then(readJson<ProcessStatus>);
+  return fetch(`/api/mcp/${encodeURIComponent(id)}/${action}`, { method: "POST" }).then(
+    readJson<ProcessStatus>,
+  );
+}
+
+export function getTunnel(): Promise<TunnelStatus> {
+  return fetch("/api/tunnel").then(readJson<TunnelStatus>);
+}
+
+export function getTunnelLogs(): Promise<TunnelLogEntry[]> {
+  return fetch("/api/tunnel/logs").then(readJson<TunnelLogEntry[]>);
+}
+
+export function tunnelLifecycleAction(
+  action: "start" | "stop" | "restart",
+): Promise<TunnelStatus> {
+  return fetch(`/api/tunnel/${action}`, { method: "POST" }).then(readJson<TunnelStatus>);
 }

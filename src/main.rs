@@ -6,8 +6,10 @@ use mcp_studio::{
     api::{self, AppState},
     config::StudioConfig,
     logging,
+    realtime::EventHub,
     registry::Registry,
     supervisor::Supervisor,
+    tunnel::TunnelSupervisor,
 };
 
 #[derive(Debug, Parser)]
@@ -34,7 +36,14 @@ async fn main() -> Result<()> {
         Registry::new(config.mcp.clone()),
         config.log_capacity,
         Duration::from_millis(config.stop_timeout_ms),
+        base_dir.clone(),
+    ));
+    let tunnel = Arc::new(TunnelSupervisor::new(
+        config.tunnel.clone(),
+        config.log_capacity,
+        Duration::from_millis(config.stop_timeout_ms),
         base_dir,
+        EventHub::default(),
     ));
 
     let addr: SocketAddr = config.server.listen_addr.parse()?;
@@ -42,14 +51,16 @@ async fn main() -> Result<()> {
     tracing::info!(
         listen_addr = %addr,
         managed_mcp_count = config.mcp.len(),
-        "starting MCP Studio core supervisor"
+        "starting MCP Studio"
     );
 
     let shutdown_supervisor = supervisor.clone();
-    let app = api::router(AppState { supervisor });
+    let shutdown_tunnel = tunnel.clone();
+    let app = api::router(AppState { supervisor, tunnel });
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             shutdown_signal().await;
+            shutdown_tunnel.shutdown().await;
             shutdown_supervisor.shutdown_all().await;
         })
         .await?;
@@ -77,5 +88,5 @@ async fn shutdown_signal() {
         _ = terminate => {},
     }
 
-    tracing::info!("shutdown signal received; stopping managed MCP processes");
+    tracing::info!("shutdown signal received; stopping managed tunnel and MCP processes");
 }
