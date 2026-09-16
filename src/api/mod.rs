@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use axum::{
     Json, Router,
-    extract::{Path, State, WebSocketUpgrade, ws::{Message, WebSocket}},
+    extract::{
+        Path, State, WebSocketUpgrade,
+        ws::{Message, WebSocket},
+    },
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -229,7 +232,7 @@ impl From<StudioError> for ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let status = self.status_override.unwrap_or_else(|| match &self.error {
+        let status = self.status_override.unwrap_or(match &self.error {
             StudioError::NotFound(_) => StatusCode::NOT_FOUND,
             StudioError::AlreadyRunning(_) | StudioError::NotRunning(_) => StatusCode::CONFLICT,
             StudioError::Config(_) => StatusCode::BAD_REQUEST,

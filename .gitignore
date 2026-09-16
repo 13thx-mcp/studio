@@ -50,6 +50,7 @@ config.override.toml
 /web/.cache/
 /web/coverage/
 /web/*.local
+/web/*.tsbuildinfo
 
 # JavaScript package manager noise
 /web/npm-debug.log*

@@ -7,9 +7,17 @@ pub const EVENT_CHANNEL_CAPACITY: usize = 1024;
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StudioEvent {
-    Snapshot { servers: Vec<ProcessStatus> },
-    ProcessStatus { mcp_id: String, status: ProcessStatus },
-    Log { mcp_id: String, entry: LogEntry },
+    Snapshot {
+        servers: Vec<ProcessStatus>,
+    },
+    ProcessStatus {
+        mcp_id: String,
+        status: ProcessStatus,
+    },
+    Log {
+        mcp_id: String,
+        entry: LogEntry,
+    },
     ResyncRequired,
 }
 
