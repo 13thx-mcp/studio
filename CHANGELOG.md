@@ -4,6 +4,62 @@ All notable changes to MCP Studio will be documented here.
 
 The project follows Semantic Versioning once public/pre-release artifacts begin.
 
+## [0.2.0] - 2026-09-16
+
+### Milestone
+
+- Milestone 2 — MVP Web Dashboard — completed and closed.
+
+### Added
+
+- React + TypeScript + Vite dashboard under `web/`.
+- Dashboard overview with managed/running/failed/restart summaries.
+- MCP server detail view with PID, live uptime, restart/crash counters, last exit, and last error.
+- Browser start/stop/restart controls derived from supervisor lifecycle state.
+- WebSocket endpoint at `GET /api/ws`.
+- Typed realtime event model with initial snapshots, process status events, log events, and resync notifications.
+- Broadcast-backed runtime event hub.
+- Automatic frontend WebSocket reconnect with bounded exponential backoff.
+- Live stdout/stderr/Studio log viewer with stream filtering, auto-scroll, and browser-local clear-view.
+- Monotonic per-MCP log sequence numbers for REST/WebSocket deduplication.
+- Production SPA serving from Axum using `web/dist` with index fallback.
+- Vite development proxy for REST and WebSocket traffic.
+- Frontend lint/typecheck/test/build toolchain and Vitest coverage for state helpers and reconnect behavior.
+- Project `Makefile` for common install, development, verification, release, and run workflows.
+- Milestone 2 architecture, threat-model, and status documentation.
+
+### Changed
+
+- Browser lifecycle mutations and WebSocket upgrades now enforce a same-origin `Origin`/`Host` policy when an Origin header is present.
+- Dashboard uptime advances locally between backend status updates.
+- Child-process ANSI terminal control sequences are stripped before logs are stored and streamed.
+- Dashboard rendering removes duplicated tracing timestamp/level prefixes from child log messages while retaining table timestamp/stream metadata.
+- Frontend dependency versions used by the lint/typecheck toolchain are pinned to a mutually compatible set.
+- Package version advanced to `0.2.0`.
+
+### Verified
+
+- `cargo fmt --all -- --check`
+- `cargo clippy --all-targets --all-features -- -D warnings`
+- `cargo test --all-targets --all-features`
+- `cargo build --all-targets --all-features`
+- `cargo audit`
+- `cargo build --release --locked`
+- `pnpm install`
+- `pnpm lint`
+- `pnpm typecheck`
+- `pnpm test`
+- `pnpm build`
+- Manual browser smoke test with the real Filesystem MCP, including start, restart, stop, live state/log updates, refresh reconciliation, and WebSocket reconnect.
+
+### Security
+
+- Studio remains loopback-only.
+- Lifecycle APIs still accept only configured MCP identifiers, never caller-supplied PIDs or executable commands.
+- Browser mutation and WebSocket paths reject foreign origins.
+- Wildcard CORS is not enabled.
+- Process status and dashboard data do not expose MCP environment configuration values.
+
 ## [0.1.0] - 2026-09-16
 
 ### Milestone

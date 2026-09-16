@@ -4,21 +4,34 @@ Local-first web control plane for monitoring and managing MCP servers and secure
 
 ## Current status
 
-Milestone 1 core process supervisor is implemented and awaiting runtime verification. Studio can supervise the statically configured Blender and Filesystem MCP servers, expose lifecycle APIs, capture recent stdout/stderr logs, and stop owned child processes during Studio shutdown.
+Milestone 2 — MVP Web Dashboard is in active implementation on top of the completed Milestone 1 process supervisor.
 
-Tunnel control, persistent registry/discovery, historical metrics, and the web dashboard remain deferred to later milestones in `ROADMAP.md`.
+Current capabilities include:
+
+- Static Blender and Filesystem MCP registry.
+- Start / stop / restart process supervision.
+- PID, state, uptime, restart-count, crash-count, exit-code, and error reporting.
+- Bounded stdout/stderr/Studio log capture.
+- REST lifecycle API.
+- WebSocket runtime events and reconnect/resync behavior.
+- React/TypeScript dashboard for lifecycle control and live status/log viewing.
+- Same-origin browser protection for lifecycle mutations and WebSocket upgrades.
+- Production frontend assets served by the Studio Axum service from `web/dist`.
+
+Tunnel control, persistent registry/discovery, historical metrics, and authentication/remote mode remain deferred to later milestones in `ROADMAP.md`.
 
 ## Requirements
 
 - Rust 1.98.1
 - Cargo
-- Unix platform (macOS/Linux) for Milestone 1 signal-based graceful process control
+- Node.js and pnpm for dashboard development/build
+- Unix platform (macOS/Linux) for signal-based graceful process control
 
-The pinned toolchain is declared in `rust-toolchain.toml`.
+The pinned Rust toolchain is declared in `rust-toolchain.toml`.
 
-## Build the managed MCP servers first
+## Build managed MCP servers first
 
-Milestone 1 defaults expect debug binaries at:
+Current defaults expect debug binaries at:
 
 ```text
 ../blender/target/debug/rust-mcp-blender
@@ -35,17 +48,39 @@ cd ../filesystem
 cargo build
 ```
 
+## Build the dashboard
+
+```bash
+cd mcp-server/studio/web
+pnpm install
+pnpm build
+```
+
+The production bundle is written to `web/dist` and served by Studio.
+
+For frontend development, Vite proxies `/api` and WebSocket traffic to Studio on `127.0.0.1:18100`:
+
+```bash
+pnpm dev
+```
+
 ## Run Studio
 
 ```bash
 cd mcp-server/studio
-cargo run
+cargo run -- --config studio.example.toml
 ```
 
 Default listen address:
 
 ```text
 127.0.0.1:18100
+```
+
+After building the dashboard, open:
+
+```text
+http://127.0.0.1:18100/
 ```
 
 ## API
@@ -59,16 +94,28 @@ POST /api/mcp/{id}/start
 POST /api/mcp/{id}/stop
 POST /api/mcp/{id}/restart
 GET  /api/mcp/{id}/logs
+GET  /api/ws
 ```
 
-Examples:
+`/api/ws` sends an initial process snapshot followed by process-status and log events. If the broadcast receiver lags, Studio requests resynchronization and sends a fresh snapshot.
 
-```bash
-curl http://127.0.0.1:18100/api/mcp
-curl -X POST http://127.0.0.1:18100/api/mcp/blender/start
-curl http://127.0.0.1:18100/api/mcp/blender/logs
-curl -X POST http://127.0.0.1:18100/api/mcp/blender/stop
-```
+## Dashboard
+
+The Milestone 2 dashboard provides:
+
+- Studio connection status.
+- Managed/running/failed/restart summary.
+- MCP list and per-server details.
+- Start / stop / restart actions.
+- PID, uptime, restart count, crash count, last exit, and last error.
+- Live WebSocket updates.
+- Live stdout/stderr/Studio logs.
+- Stream filtering.
+- Auto-scroll control.
+- Local-only log-view clearing.
+- Automatic WebSocket reconnect with bounded exponential backoff.
+
+Clearing the browser log view does not mutate the supervisor's in-memory log buffer.
 
 ## Configuration
 
@@ -88,7 +135,7 @@ MCP_STUDIO_CONFIG=studio.example.toml cargo run
 
 Relative `command` and `working_dir` paths are resolved against Studio's process working directory.
 
-Milestone 1 continues to reject non-loopback bind addresses by design.
+Milestone 2 remains loopback-only. Remote access is intentionally unsupported until authentication/authorization and tunnel exposure are designed and reviewed.
 
 ## Process lifecycle
 
@@ -103,7 +150,7 @@ RUNNING ───────────────┐
    │ stop              │ unexpected non-zero exit / wait error
    ▼                   ▼
 STOPPING             FAILED
-   │                   │
+   │
    └──── exit ─────► STOPPED
 ```
 
@@ -115,20 +162,59 @@ Stop behavior on Unix:
 
 Studio only signals PIDs that came from processes it spawned and currently tracks.
 
-## Logging
+## Realtime model
 
-Recent stdout/stderr lines are stored in an in-memory ring buffer per MCP server. The default capacity is 500 entries and can be changed with `log_capacity`.
+The supervisor publishes typed runtime events through an in-process Tokio broadcast channel.
 
-Historical/persistent logs are intentionally out of scope for Milestone 1.
+Browser clients receive:
+
+```text
+snapshot
+process_status
+log
+resync_required
+```
+
+Each log entry carries a monotonic per-MCP sequence number so the dashboard can deduplicate REST history and WebSocket events safely.
+
+Uptime is sampled from the backend and advanced locally in the browser between process-status events to avoid unnecessary one-second broadcast traffic.
+
+## Security baseline
+
+- Loopback-only HTTP control plane.
+- No arbitrary shell-command API.
+- Static MCP registry for the current milestone.
+- Studio signals only tracked child PIDs.
+- Lifecycle browser requests require same-origin `Origin`/`Host` alignment when an `Origin` header is present.
+- WebSocket upgrades use the same same-origin policy.
+- No wildcard CORS policy.
+- MCP environment configuration is not serialized through process-status responses.
+- No auto-execution of discovered projects.
+
+Child stdout/stderr is still exposed verbatim through the logs API/dashboard. Managed MCP servers must not emit credentials; generic secret redaction remains a later hardening requirement.
 
 ## Development checks
 
+Rust:
+
 ```bash
 cargo fmt --all -- --check
-cargo clippy --locked --all-targets --all-features -- -D warnings
-cargo test --locked --all-targets --all-features
-cargo build --locked --all-targets --all-features
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets --all-features
+cargo build --all-targets --all-features
 cargo audit
+cargo build --release --locked
+```
+
+Dashboard:
+
+```bash
+cd web
+pnpm install
+pnpm lint
+pnpm typecheck
+pnpm test
+pnpm build
 ```
 
 ## Engineering documents
@@ -136,14 +222,7 @@ cargo audit
 - `ROADMAP.md` — milestones from foundation to production grade.
 - `docs/architecture.md` — component boundaries and design principles.
 - `docs/threat-model.md` — security baseline.
+- `docs/milestone-1-status.md` — completed process-supervisor milestone evidence.
+- `docs/milestone-2-status.md` — current dashboard milestone verification status.
 - `docs/adr/` — architecture decision records.
 - `CONTRIBUTING.md` — SDLC and development workflow.
-
-## Security baseline
-
-- Localhost-only HTTP control plane.
-- No arbitrary shell-command API.
-- Static MCP registry for Milestone 1.
-- Studio signals only tracked child PIDs.
-- No auto-execution of discovered projects.
-- No secret values returned through the lifecycle API.
