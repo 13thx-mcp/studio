@@ -10,13 +10,14 @@ use serde::Serialize;
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
     process::Command,
-    sync::{Mutex, RwLock},
+    sync::{Mutex, RwLock, broadcast},
     time::{sleep, timeout},
 };
 
 use crate::{
     config::McpServerConfig,
     error::{StudioError, StudioResult},
+    realtime::{EventHub, StudioEvent},
     registry::Registry,
 };
 
@@ -45,6 +46,7 @@ pub struct ProcessStatus {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct LogEntry {
+    pub sequence: u64,
     pub timestamp_ms: u128,
     pub stream: LogStream,
     pub message: String,
@@ -68,6 +70,7 @@ struct RuntimeState {
     last_exit_code: Option<i32>,
     last_error: Option<String>,
     logs: VecDeque<LogEntry>,
+    next_log_sequence: u64,
     generation: u64,
 }
 
@@ -82,8 +85,45 @@ impl Default for RuntimeState {
             last_exit_code: None,
             last_error: None,
             logs: VecDeque::new(),
+            next_log_sequence: 1,
             generation: 0,
         }
+    }
+}
+
+impl RuntimeState {
+    fn status(&self, id: &str, name: &str) -> ProcessStatus {
+        ProcessStatus {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            state: self.state,
+            pid: self.pid,
+            uptime_ms: self
+                .started_at
+                .map(|started| u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)),
+            restart_count: self.restart_count,
+            crash_count: self.crash_count,
+            last_exit_code: self.last_exit_code,
+            last_error: self.last_error.clone(),
+        }
+    }
+
+    fn push_log(&mut self, capacity: usize, stream: LogStream, message: String) -> LogEntry {
+        while self.logs.len() >= capacity {
+            self.logs.pop_front();
+        }
+        let entry = LogEntry {
+            sequence: self.next_log_sequence,
+            timestamp_ms: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis(),
+            stream,
+            message,
+        };
+        self.next_log_sequence = self.next_log_sequence.saturating_add(1);
+        self.logs.push_back(entry.clone());
+        entry
     }
 }
 
@@ -91,6 +131,7 @@ impl Default for RuntimeState {
 pub struct Supervisor {
     registry: Arc<Registry>,
     runtimes: Arc<RwLock<BTreeMap<String, Arc<Mutex<RuntimeState>>>>>,
+    events: EventHub,
     log_capacity: usize,
     stop_timeout: Duration,
     base_dir: Arc<PathBuf>,
@@ -111,10 +152,15 @@ impl Supervisor {
         Self {
             registry: Arc::new(registry),
             runtimes: Arc::new(RwLock::new(runtimes)),
+            events: EventHub::default(),
             log_capacity,
             stop_timeout,
             base_dir: Arc::new(base_dir),
         }
+    }
+
+    pub fn subscribe_events(&self) -> broadcast::Receiver<StudioEvent> {
+        self.events.subscribe()
     }
 
     pub async fn list(&self) -> Vec<ProcessStatus> {
@@ -135,19 +181,7 @@ impl Supervisor {
             .ok_or_else(|| StudioError::NotFound(id.to_owned()))?;
         let runtime = self.runtime(id).await?;
         let state = runtime.lock().await;
-        Ok(ProcessStatus {
-            id: id.to_owned(),
-            name: config.name.clone(),
-            state: state.state,
-            pid: state.pid,
-            uptime_ms: state
-                .started_at
-                .map(|started| u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)),
-            restart_count: state.restart_count,
-            crash_count: state.crash_count,
-            last_exit_code: state.last_exit_code,
-            last_error: state.last_error.clone(),
-        })
+        Ok(state.status(id, &config.name))
     }
 
     pub async fn logs(&self, id: &str) -> StudioResult<Vec<LogEntry>> {
@@ -167,7 +201,7 @@ impl Supervisor {
             .ok_or_else(|| StudioError::NotFound(id.to_owned()))?;
         let runtime = self.runtime(id).await?;
 
-        let generation = {
+        let (generation, starting_status) = {
             let mut state = runtime.lock().await;
             match state.state {
                 ProcessState::Stopped | ProcessState::Failed => {}
@@ -176,8 +210,9 @@ impl Supervisor {
             state.state = ProcessState::Starting;
             state.last_error = None;
             state.generation = state.generation.wrapping_add(1);
-            state.generation
+            (state.generation, state.status(id, &config.name))
         };
+        self.publish_status(id, starting_status);
 
         match self
             .spawn_process(id, &config, runtime.clone(), generation)
@@ -185,31 +220,36 @@ impl Supervisor {
         {
             Ok(()) => self.status(id).await,
             Err(error) => {
-                let mut state = runtime.lock().await;
-                if state.generation == generation {
-                    state.state = ProcessState::Failed;
-                    state.pid = None;
-                    state.started_at = None;
-                    state.last_error = Some(error.to_string());
-                    push_log(
-                        &mut state.logs,
+                let (failed_status, log_entry) = {
+                    let mut state = runtime.lock().await;
+                    if state.generation == generation {
+                        state.state = ProcessState::Failed;
+                        state.pid = None;
+                        state.started_at = None;
+                        state.last_error = Some(error.to_string());
+                    }
+                    let entry = state.push_log(
                         self.log_capacity,
                         LogStream::Studio,
                         format!("failed to start: {error}"),
                     );
-                }
+                    (state.status(id, &config.name), entry)
+                };
+                self.publish_log(id, log_entry);
+                self.publish_status(id, failed_status);
                 Err(error)
             }
         }
     }
 
     pub async fn stop(&self, id: &str) -> StudioResult<ProcessStatus> {
-        self.registry
+        let config = self
+            .registry
             .get(id)
             .ok_or_else(|| StudioError::NotFound(id.to_owned()))?;
         let runtime = self.runtime(id).await?;
 
-        let pid = {
+        let (pid, stopping_status, log_entry) = {
             let mut state = runtime.lock().await;
             match state.state {
                 ProcessState::Running | ProcessState::Starting => {
@@ -219,13 +259,12 @@ impl Supervisor {
                         )));
                     };
                     state.state = ProcessState::Stopping;
-                    push_log(
-                        &mut state.logs,
+                    let entry = state.push_log(
                         self.log_capacity,
                         LogStream::Studio,
                         "stop requested".to_owned(),
                     );
-                    pid
+                    (pid, state.status(id, &config.name), entry)
                 }
                 ProcessState::Stopping => {
                     return Err(StudioError::Process(format!(
@@ -237,6 +276,8 @@ impl Supervisor {
                 }
             }
         };
+        self.publish_log(id, log_entry);
+        self.publish_status(id, stopping_status);
 
         send_terminate(pid)?;
 
@@ -286,6 +327,20 @@ impl Supervisor {
                 tracing::error!(mcp_id = id, %error, "failed to stop MCP during Studio shutdown");
             }
         }
+    }
+
+    fn publish_status(&self, id: &str, status: ProcessStatus) {
+        self.events.publish(StudioEvent::ProcessStatus {
+            mcp_id: id.to_owned(),
+            status,
+        });
+    }
+
+    fn publish_log(&self, id: &str, entry: LogEntry) {
+        self.events.publish(StudioEvent::Log {
+            mcp_id: id.to_owned(),
+            entry,
+        });
     }
 
     async fn runtime(&self, id: &str) -> StudioResult<Arc<Mutex<RuntimeState>>> {
@@ -343,7 +398,7 @@ impl Supervisor {
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
 
-        {
+        let (running_status, started_log) = {
             let mut state = runtime.lock().await;
             if state.generation != generation {
                 return Err(StudioError::Process(format!(
@@ -355,33 +410,41 @@ impl Supervisor {
             state.started_at = Some(Instant::now());
             state.last_exit_code = None;
             state.last_error = None;
-            push_log(
-                &mut state.logs,
+            let entry = state.push_log(
                 self.log_capacity,
                 LogStream::Studio,
                 format!("started PID {pid}"),
             );
-        }
+            (state.status(id, &config.name), entry)
+        };
+        self.publish_log(id, started_log);
+        self.publish_status(id, running_status);
 
         if let Some(stdout) = stdout {
             spawn_log_reader(
+                id.to_owned(),
                 runtime.clone(),
                 stdout,
                 LogStream::Stdout,
                 self.log_capacity,
+                self.events.clone(),
             );
         }
         if let Some(stderr) = stderr {
             spawn_log_reader(
+                id.to_owned(),
                 runtime.clone(),
                 stderr,
                 LogStream::Stderr,
                 self.log_capacity,
+                self.events.clone(),
             );
         }
 
         let id_owned = id.to_owned();
+        let name_owned = config.name.clone();
         let capacity = self.log_capacity;
+        let events = self.events.clone();
         tokio::spawn(async move {
             // Keep the child's stdin pipe alive while waiting for the process.
             // Tokio's Child::wait closes an owned stdin handle before waiting;
@@ -389,46 +452,48 @@ impl Supervisor {
             // from observing an immediate EOF before an MCP client connects.
             let _stdin_guard = stdin;
             let result = child.wait().await;
-            let mut state = runtime.lock().await;
-            if state.generation != generation {
-                return;
-            }
+            let (status, log_entry) = {
+                let mut state = runtime.lock().await;
+                if state.generation != generation {
+                    return;
+                }
 
-            let was_stopping = state.state == ProcessState::Stopping;
-            state.pid = None;
-            state.started_at = None;
+                let was_stopping = state.state == ProcessState::Stopping;
+                state.pid = None;
+                state.started_at = None;
 
-            match result {
-                Ok(exit) => {
-                    state.last_exit_code = exit.code();
-                    if was_stopping || exit.success() {
-                        state.state = ProcessState::Stopped;
-                        state.last_error = None;
-                    } else {
+                let message = match result {
+                    Ok(exit) => {
+                        state.last_exit_code = exit.code();
+                        if was_stopping || exit.success() {
+                            state.state = ProcessState::Stopped;
+                            state.last_error = None;
+                        } else {
+                            state.state = ProcessState::Failed;
+                            state.crash_count = state.crash_count.saturating_add(1);
+                            state.last_error = Some(format!("process exited with status {exit}"));
+                        }
+                        format!("process exited: {exit}")
+                    }
+                    Err(error) => {
                         state.state = ProcessState::Failed;
                         state.crash_count = state.crash_count.saturating_add(1);
-                        state.last_error = Some(format!("process exited with status {exit}"));
+                        state.last_error = Some(format!("failed waiting for process: {error}"));
+                        format!("wait failed: {error}")
                     }
-                    push_log(
-                        &mut state.logs,
-                        capacity,
-                        LogStream::Studio,
-                        format!("process exited: {exit}"),
-                    );
-                }
-                Err(error) => {
-                    state.state = ProcessState::Failed;
-                    state.crash_count = state.crash_count.saturating_add(1);
-                    state.last_error = Some(format!("failed waiting for process: {error}"));
-                    push_log(
-                        &mut state.logs,
-                        capacity,
-                        LogStream::Studio,
-                        format!("wait failed: {error}"),
-                    );
-                }
-            }
-            tracing::info!(mcp_id = id_owned, state = ?state.state, "MCP process exited");
+                };
+                let entry = state.push_log(capacity, LogStream::Studio, message);
+                (state.status(&id_owned, &name_owned), entry)
+            };
+            events.publish(StudioEvent::Log {
+                mcp_id: id_owned.clone(),
+                entry: log_entry,
+            });
+            events.publish(StudioEvent::ProcessStatus {
+                mcp_id: id_owned.clone(),
+                status: status.clone(),
+            });
+            tracing::info!(mcp_id = id_owned, state = ?status.state, "MCP process exited");
         });
 
         Ok(())
@@ -453,25 +518,13 @@ fn resolve_path(base_dir: &Path, path: &Path) -> PathBuf {
     }
 }
 
-fn push_log(logs: &mut VecDeque<LogEntry>, capacity: usize, stream: LogStream, message: String) {
-    while logs.len() >= capacity {
-        logs.pop_front();
-    }
-    logs.push_back(LogEntry {
-        timestamp_ms: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis(),
-        stream,
-        message,
-    });
-}
-
 fn spawn_log_reader<R>(
+    id: String,
     runtime: Arc<Mutex<RuntimeState>>,
     reader: R,
     stream: LogStream,
     capacity: usize,
+    events: EventHub,
 ) where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
@@ -480,18 +533,29 @@ fn spawn_log_reader<R>(
         loop {
             match lines.next_line().await {
                 Ok(Some(line)) => {
-                    let mut state = runtime.lock().await;
-                    push_log(&mut state.logs, capacity, stream, line);
+                    let entry = {
+                        let mut state = runtime.lock().await;
+                        state.push_log(capacity, stream, line)
+                    };
+                    events.publish(StudioEvent::Log {
+                        mcp_id: id.clone(),
+                        entry,
+                    });
                 }
                 Ok(None) => break,
                 Err(error) => {
-                    let mut state = runtime.lock().await;
-                    push_log(
-                        &mut state.logs,
-                        capacity,
-                        LogStream::Studio,
-                        format!("log reader error: {error}"),
-                    );
+                    let entry = {
+                        let mut state = runtime.lock().await;
+                        state.push_log(
+                            capacity,
+                            LogStream::Studio,
+                            format!("log reader error: {error}"),
+                        )
+                    };
+                    events.publish(StudioEvent::Log {
+                        mcp_id: id.clone(),
+                        entry,
+                    });
                     break;
                 }
             }

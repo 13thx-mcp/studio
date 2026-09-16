@@ -2,15 +2,17 @@ use std::sync::Arc;
 
 use axum::{
     Json, Router,
-    extract::{Path, State},
-    http::StatusCode,
+    extract::{Path, State, WebSocketUpgrade, ws::{Message, WebSocket}},
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
 use serde::Serialize;
+use tokio::sync::broadcast::error::RecvError;
 
 use crate::{
     error::StudioError,
+    realtime::StudioEvent,
     supervisor::{LogEntry, ProcessStatus, Supervisor},
 };
 
@@ -47,6 +49,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/mcp/{id}/stop", post(stop_mcp))
         .route("/api/mcp/{id}/restart", post(restart_mcp))
         .route("/api/mcp/{id}/logs", get(get_logs))
+        .route("/api/ws", get(websocket))
         .with_state(state)
 }
 
@@ -80,21 +83,27 @@ async fn get_mcp(
 async fn start_mcp(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    headers: HeaderMap,
 ) -> Result<Json<ProcessStatus>, ApiError> {
+    ensure_same_origin(&headers)?;
     Ok(Json(state.supervisor.start(&id).await?))
 }
 
 async fn stop_mcp(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    headers: HeaderMap,
 ) -> Result<Json<ProcessStatus>, ApiError> {
+    ensure_same_origin(&headers)?;
     Ok(Json(state.supervisor.stop(&id).await?))
 }
 
 async fn restart_mcp(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    headers: HeaderMap,
 ) -> Result<Json<ProcessStatus>, ApiError> {
+    ensure_same_origin(&headers)?;
     Ok(Json(state.supervisor.restart(&id).await?))
 }
 
@@ -105,28 +114,133 @@ async fn get_logs(
     Ok(Json(state.supervisor.logs(&id).await?))
 }
 
-struct ApiError(StudioError);
+async fn websocket(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> Result<Response, ApiError> {
+    ensure_same_origin(&headers)?;
+    Ok(ws
+        .on_upgrade(move |socket| websocket_session(socket, state.supervisor))
+        .into_response())
+}
+
+async fn websocket_session(mut socket: WebSocket, supervisor: Arc<Supervisor>) {
+    if send_event(
+        &mut socket,
+        &StudioEvent::Snapshot {
+            servers: supervisor.list().await,
+        },
+    )
+    .await
+    .is_err()
+    {
+        return;
+    }
+
+    let mut receiver = supervisor.subscribe_events();
+    loop {
+        match receiver.recv().await {
+            Ok(event) => {
+                if send_event(&mut socket, &event).await.is_err() {
+                    break;
+                }
+            }
+            Err(RecvError::Lagged(_)) => {
+                if send_event(&mut socket, &StudioEvent::ResyncRequired)
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+                if send_event(
+                    &mut socket,
+                    &StudioEvent::Snapshot {
+                        servers: supervisor.list().await,
+                    },
+                )
+                .await
+                .is_err()
+                {
+                    break;
+                }
+            }
+            Err(RecvError::Closed) => break,
+        }
+    }
+}
+
+async fn send_event(socket: &mut WebSocket, event: &StudioEvent) -> Result<(), ()> {
+    let payload = serde_json::to_string(event).map_err(|_| ())?;
+    socket
+        .send(Message::Text(payload.into()))
+        .await
+        .map_err(|_| ())
+}
+
+fn ensure_same_origin(headers: &HeaderMap) -> Result<(), ApiError> {
+    let Some(origin) = headers.get(axum::http::header::ORIGIN) else {
+        return Ok(());
+    };
+    let Some(host) = headers.get(axum::http::header::HOST) else {
+        return Err(ApiError::forbidden(
+            "missing Host header for browser request",
+        ));
+    };
+
+    let origin = origin
+        .to_str()
+        .map_err(|_| ApiError::forbidden("invalid Origin header"))?;
+    let host = host
+        .to_str()
+        .map_err(|_| ApiError::forbidden("invalid Host header"))?;
+
+    let allowed_http = format!("http://{host}");
+    let allowed_https = format!("https://{host}");
+    if origin == allowed_http || origin == allowed_https {
+        Ok(())
+    } else {
+        Err(ApiError::forbidden("cross-origin browser request rejected"))
+    }
+}
+
+struct ApiError {
+    error: StudioError,
+    status_override: Option<StatusCode>,
+}
+
+impl ApiError {
+    fn forbidden(message: impl Into<String>) -> Self {
+        Self {
+            error: StudioError::Config(message.into()),
+            status_override: Some(StatusCode::FORBIDDEN),
+        }
+    }
+}
 
 impl From<StudioError> for ApiError {
     fn from(value: StudioError) -> Self {
-        Self(value)
+        Self {
+            error: value,
+            status_override: None,
+        }
     }
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let status = match self.0 {
+        let status = self.status_override.unwrap_or_else(|| match &self.error {
             StudioError::NotFound(_) => StatusCode::NOT_FOUND,
             StudioError::AlreadyRunning(_) | StudioError::NotRunning(_) => StatusCode::CONFLICT,
             StudioError::Config(_) => StatusCode::BAD_REQUEST,
             StudioError::Process(_) | StudioError::Io(_) | StudioError::Toml(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
-        };
+        });
         (
             status,
             Json(ErrorResponse {
-                error: self.0.to_string(),
+                error: self.error.to_string(),
             }),
         )
             .into_response()
@@ -180,5 +294,22 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn rejects_cross_origin_lifecycle_request() {
+        let response = test_router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/mcp/missing/start")
+                    .header("host", "127.0.0.1:18100")
+                    .header("origin", "https://example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::FORBIDDEN);
     }
 }
