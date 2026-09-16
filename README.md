@@ -1,24 +1,28 @@
 # MCP Studio
 
-Local-first web control plane for monitoring and managing MCP servers and secure tunnels under `mcp-server/`.
+Local-first web control plane for monitoring and managing MCP servers and the configured secure tunnel runtime under `mcp-server/`.
 
 ## Current status
 
-Milestone 2 — MVP Web Dashboard is in active implementation on top of the completed Milestone 1 process supervisor.
+Milestone 3 — Secure Tunnel Management is implemented on `feature/secure-tunnel-management`.
+
+Automated Rust and frontend release gates pass. The remaining Milestone 3 release gate is the manual real-runtime smoke test with `../tunnel-client/tunnel-client-runtime-cloudflared`; `v0.3.0` is not considered released until that smoke test succeeds.
 
 Current capabilities include:
 
-- Static Blender and Filesystem MCP registry.
-- Start / stop / restart process supervision.
-- PID, state, uptime, restart-count, crash-count, exit-code, and error reporting.
-- Bounded stdout/stderr/Studio log capture.
-- REST lifecycle API.
-- WebSocket runtime events and reconnect/resync behavior.
-- React/TypeScript dashboard for lifecycle control and live status/log viewing.
+- Static MCP registry and MCP lifecycle supervision.
+- MCP start / stop / restart with PID ownership safety.
+- Secure tunnel start / stop / restart using one validated server-side tunnel configuration.
+- MCP and tunnel PID, state, uptime, restart count, crash count, last exit, and last error reporting.
+- Bounded recent logs for MCP and tunnel processes.
+- Tunnel secret-value redaction before logs reach REST, WebSocket, or dashboard consumers.
+- REST lifecycle APIs.
+- Typed WebSocket runtime events and reconnect/resync behavior.
+- React/TypeScript dashboard with separate Studio connection, MCP lifecycle, and tunnel lifecycle state.
 - Same-origin browser protection for lifecycle mutations and WebSocket upgrades.
 - Production frontend assets served by the Studio Axum service from `web/dist`.
 
-Tunnel control, persistent registry/discovery, historical metrics, and authentication/remote mode remain deferred to later milestones in `ROADMAP.md`.
+Persistent registry/discovery, SQLite history, remote authentication, auto-restart/backoff, and MCP gateway request telemetry remain deferred to later milestones in `ROADMAP.md`.
 
 ## Requirements
 
@@ -26,6 +30,7 @@ Tunnel control, persistent registry/discovery, historical metrics, and authentic
 - Cargo
 - Node.js and pnpm for dashboard development/build
 - Unix platform (macOS/Linux) for signal-based graceful process control
+- Existing `mcp-server/tunnel-client` runtime bundle for tunnel lifecycle management
 
 The pinned Rust toolchain is declared in `rust-toolchain.toml`.
 
@@ -47,6 +52,30 @@ cargo build
 cd ../filesystem
 cargo build
 ```
+
+## Tunnel runtime
+
+The default Milestone 3 configuration manages:
+
+```text
+../tunnel-client/tunnel-client-runtime-cloudflared
+```
+
+with:
+
+```text
+../tunnel-client/config.yaml
+```
+
+Studio constructs the tunnel runtime invocation internally as:
+
+```text
+tunnel-client-runtime-cloudflared run --config <validated-config-file>
+```
+
+The browser cannot supply an executable path, shell command, PID, config path, or arbitrary argument array.
+
+Only the tunnel PID spawned and currently tracked by Studio is eligible for lifecycle signals.
 
 ## Build the dashboard
 
@@ -88,34 +117,42 @@ http://127.0.0.1:18100/
 ```text
 GET  /health
 GET  /api/status
+
 GET  /api/mcp
 GET  /api/mcp/{id}
 POST /api/mcp/{id}/start
 POST /api/mcp/{id}/stop
 POST /api/mcp/{id}/restart
 GET  /api/mcp/{id}/logs
+
+GET  /api/tunnel
+POST /api/tunnel/start
+POST /api/tunnel/stop
+POST /api/tunnel/restart
+GET  /api/tunnel/logs
+
 GET  /api/ws
 ```
 
-`/api/ws` sends an initial process snapshot followed by process-status and log events. If the broadcast receiver lags, Studio requests resynchronization and sends a fresh snapshot.
+`/api/ws` sends an initial snapshot containing both MCP and tunnel status, followed by typed process/tunnel status and log events. If either broadcast receiver lags, Studio requests resynchronization and sends a fresh combined snapshot.
 
 ## Dashboard
 
-The Milestone 2 dashboard provides:
+The dashboard provides:
 
-- Studio connection status.
-- Managed/running/failed/restart summary.
+- Studio realtime connection state.
+- MCP managed/running/failed summary.
+- Secure tunnel state summary.
 - MCP list and per-server details.
-- Start / stop / restart actions.
+- Separate tunnel detail panel.
+- MCP and tunnel start / stop / restart actions.
 - PID, uptime, restart count, crash count, last exit, and last error.
 - Live WebSocket updates.
-- Live stdout/stderr/Studio logs.
-- Stream filtering.
-- Auto-scroll control.
-- Local-only log-view clearing.
+- Live MCP and tunnel logs.
+- MCP stream filtering and auto-scroll.
 - Automatic WebSocket reconnect with bounded exponential backoff.
 
-Clearing the browser log view does not mutate the supervisor's in-memory log buffer.
+Studio connection state, MCP lifecycle state, and tunnel lifecycle state are intentionally presented as separate concepts.
 
 ## Configuration
 
@@ -133,11 +170,35 @@ or:
 MCP_STUDIO_CONFIG=studio.example.toml cargo run
 ```
 
-Relative `command` and `working_dir` paths are resolved against Studio's process working directory.
+MCP relative `command` and `working_dir` paths are resolved against Studio's process working directory.
 
-Milestone 2 remains loopback-only. Remote access is intentionally unsupported until authentication/authorization and tunnel exposure are designed and reviewed.
+Tunnel configuration is server-side and typed:
 
-## Process lifecycle
+```toml
+[tunnel]
+name = "Secure tunnel"
+runtime = "../tunnel-client/tunnel-client-runtime-cloudflared"
+working_dir = "../tunnel-client"
+config_file = "../tunnel-client/config.yaml"
+```
+
+Tunnel runtime and config paths are canonicalized and must remain under the configured tunnel working directory.
+
+Optional tunnel environment secrets use server-side references rather than browser-provided values:
+
+```toml
+[tunnel.env]
+# TUNNEL_TOKEN = { from_env = "MCP_TUNNEL_TOKEN" }
+# CLOUDFLARED_CREDENTIAL = { from_file = "../secrets/cloudflared-token" }
+```
+
+Resolved secret values are not included in tunnel status, REST responses, WebSocket status events, or frontend types.
+
+Studio remains loopback-only. Remote access is intentionally unsupported until authentication/authorization and tunnel exposure are explicitly designed and reviewed.
+
+## Lifecycle model
+
+MCP and tunnel lifecycle domains both use the operational states:
 
 ```text
 STOPPED
@@ -147,12 +208,14 @@ STARTING
    │ spawn
    ▼
 RUNNING ───────────────┐
-   │ stop              │ unexpected non-zero exit / wait error
+   │ stop              │ unexpected exit / wait error
    ▼                   ▼
 STOPPING             FAILED
    │
    └──── exit ─────► STOPPED
 ```
+
+An unexpected tunnel exit is considered a crash even when the child exits with status `0`; only an exit observed while the tunnel is explicitly stopping is treated as a normal stopped transition.
 
 Stop behavior on Unix:
 
@@ -164,34 +227,39 @@ Studio only signals PIDs that came from processes it spawned and currently track
 
 ## Realtime model
 
-The supervisor publishes typed runtime events through an in-process Tokio broadcast channel.
-
-Browser clients receive:
+Browser clients receive typed events:
 
 ```text
 snapshot
 process_status
 log
+tunnel_status
+tunnel_log
 resync_required
 ```
 
-Each log entry carries a monotonic per-MCP sequence number so the dashboard can deduplicate REST history and WebSocket events safely.
+MCP and tunnel supervisors remain separate lifecycle domains. The WebSocket layer multiplexes their bounded realtime event streams into one browser protocol.
 
-Uptime is sampled from the backend and advanced locally in the browser between process-status events to avoid unnecessary one-second broadcast traffic.
+Each log stream carries monotonic sequence numbers so the dashboard can deduplicate REST history and WebSocket events safely.
+
+Uptime is sampled from the backend and advanced locally in the browser between status events to avoid unnecessary one-second broadcast traffic.
 
 ## Security baseline
 
 - Loopback-only HTTP control plane.
 - No arbitrary shell-command API.
-- Static MCP registry for the current milestone.
+- Browser APIs do not accept executable paths or PIDs.
+- Tunnel argv is constructed internally from typed server-side configuration.
+- Tunnel runtime/config paths are canonicalized and confined to the configured tunnel working directory.
 - Studio signals only tracked child PIDs.
-- Lifecycle browser requests require same-origin `Origin`/`Host` alignment when an `Origin` header is present.
+- Browser lifecycle requests require same-origin `Origin`/`Host` alignment when an `Origin` header is present.
 - WebSocket upgrades use the same same-origin policy.
 - No wildcard CORS policy.
-- MCP environment configuration is not serialized through process-status responses.
+- Tunnel secret references and resolved values remain server-side.
+- Tunnel logs redact resolved secret values and common secret-bearing fields before storage/streaming.
 - No auto-execution of discovered projects.
 
-Child stdout/stderr is still exposed verbatim through the logs API/dashboard. Managed MCP servers must not emit credentials; generic secret redaction remains a later hardening requirement.
+MCP stdout/stderr remains a separate domain and is not covered by the Milestone 3 tunnel redactor; managed MCP servers must continue not to emit credentials.
 
 ## Development checks
 
@@ -221,8 +289,10 @@ pnpm build
 
 - `ROADMAP.md` — milestones from foundation to production grade.
 - `docs/architecture.md` — component boundaries and design principles.
-- `docs/threat-model.md` — security baseline.
+- `docs/threat-model.md` — active security model.
 - `docs/milestone-1-status.md` — completed process-supervisor milestone evidence.
-- `docs/milestone-2-status.md` — current dashboard milestone verification status.
+- `docs/milestone-2-status.md` — completed dashboard milestone evidence.
+- `docs/milestone-3-design.md` — secure tunnel management design boundary.
+- `docs/milestone-3-status.md` — current M3 verification and closure status.
 - `docs/adr/` — architecture decision records.
 - `CONTRIBUTING.md` — SDLC and development workflow.

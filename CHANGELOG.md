@@ -4,6 +4,69 @@ All notable changes to MCP Studio will be documented here.
 
 The project follows Semantic Versioning once public/pre-release artifacts begin.
 
+## [Unreleased]
+
+### Milestone
+
+- Milestone 3 — Secure Tunnel Management — implementation and automated verification complete; real tunnel runtime smoke verification remains before release closure.
+
+### Added
+
+- Dedicated secure tunnel supervisor with start, stop, restart, PID, uptime, restart count, crash count, last exit, and last runtime error.
+- Single configured tunnel runtime model for `tunnel-client-runtime-cloudflared`.
+- Constrained tunnel startup using internally constructed `run --config <validated-config-file>` arguments.
+- Tunnel runtime/config path canonicalization and confinement under the configured tunnel working directory.
+- Server-side tunnel environment/file secret references.
+- Bounded recent tunnel stdout/stderr/Studio log capture.
+- Tunnel log ANSI cleanup and secret redaction before REST/WebSocket/dashboard publication.
+- Tunnel REST endpoints for status, lifecycle control, and recent logs.
+- Typed `tunnel_status` and `tunnel_log` realtime events.
+- Combined reconnect/resync snapshot containing both MCP and tunnel status.
+- Secure tunnel dashboard section with lifecycle controls, runtime availability, PID, uptime, counters, errors, and realtime logs.
+- Tunnel lifecycle integration tests covering start/stop/restart, PID replacement, duplicate start, stopped-state rejection, invalid runtime, unexpected exits, realtime events, secret redaction, and shutdown cleanup.
+- Frontend verification for tunnel state/actions, log reconciliation, realtime updates, and reconnect snapshot modeling.
+- ADR 0003 documenting secure tunnel supervision and fixed runtime invocation policy.
+- Milestone 3 design and status documentation.
+
+### Changed
+
+- Studio graceful shutdown now cleans up the Studio-owned tunnel process as well as MCP processes.
+- Realtime snapshots now include current tunnel status.
+- Dashboard now visibly separates Studio realtime connection state, MCP lifecycle state, and tunnel lifecycle state.
+- Unexpected tunnel exit is treated as a crash even when the child exits with status `0`; only an explicit-stop exit transitions normally to `stopped`.
+- Tunnel startup validation/secret-resolution failures transition tunnel state to `failed` with `last_error` populated.
+- README, architecture, and threat model now describe active Milestone 3 tunnel management.
+
+### Verified
+
+- `cargo fmt --all -- --check`
+- `cargo clippy --all-targets --all-features -- -D warnings`
+- `cargo test --all-targets --all-features`
+- `cargo build --all-targets --all-features`
+- `cargo audit`
+- `cargo build --release --locked`
+- Repeated parallel `cargo test --test tunnel_lifecycle` runs after fixture-isolation hardening.
+- `pnpm install`
+- `pnpm lint`
+- `pnpm typecheck`
+- `pnpm test`
+- `pnpm build`
+
+### Security
+
+- Tunnel lifecycle APIs accept no caller-supplied executable path, PID, raw shell command, config path, or arbitrary argv.
+- Tunnel runtime and config files are validated and confined to the configured tunnel working directory.
+- Studio signals only the tunnel PID it spawned and currently tracks.
+- Tunnel environment/file secret references remain server-side and are not serialized into tunnel status or frontend types.
+- Tunnel logs redact resolved secret values and common secret-bearing fields before storage/streaming.
+- Tunnel lifecycle browser mutations retain same-origin enforcement.
+- Studio remains loopback-only.
+
+### Pending release verification
+
+- Real `tunnel-client-runtime-cloudflared` start / restart / stop smoke test.
+- Real Studio shutdown cleanup verification for the Studio-owned tunnel process.
+
 ## [0.2.0] - 2026-09-16
 
 ### Milestone
