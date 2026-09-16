@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { getLogs, lifecycleAction, listServers } from "./api";
 import { connectRealtime, type ConnectionState } from "./realtime";
 import { actionEnabled, formatUptime, mergeLogEntries } from "./state";
-import type { LogEntry, ProcessStatus, StudioEvent } from "./types";
+import type { LogEntry, LogStream, ProcessStatus, StudioEvent } from "./types";
 import "./styles.css";
+
+type LogFilter = "all" | LogStream;
 
 export default function App() {
   const [servers, setServers] = useState<Record<string, ProcessStatus>>({});
@@ -13,6 +15,10 @@ export default function App() {
   const [connection, setConnection] = useState<ConnectionState>("connecting");
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [logFilter, setLogFilter] = useState<LogFilter>("all");
+  const [autoScroll, setAutoScroll] = useState(true);
+  const [uptimeTick, setUptimeTick] = useState(0);
+  const logViewerRef = useRef<HTMLDivElement | null>(null);
 
   const refreshServers = async () => {
     try {
@@ -53,6 +59,8 @@ export default function App() {
 
   useEffect(() => {
     if (!selectedId) return;
+    setLogFilter("all");
+    setAutoScroll(true);
     void getLogs(selectedId)
       .then((entries) => {
         setLogs((current) => ({
@@ -63,12 +71,27 @@ export default function App() {
       .catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
   }, [selectedId]);
 
+  useEffect(() => {
+    const timer = window.setInterval(() => setUptimeTick((tick) => tick + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   const serverList = useMemo(
     () => Object.values(servers).sort((a, b) => a.name.localeCompare(b.name)),
     [servers],
   );
   const selected = selectedId ? servers[selectedId] : undefined;
   const selectedLogs = selectedId ? logs[selectedId] ?? [] : [];
+  const visibleLogs = useMemo(
+    () => selectedLogs.filter((entry) => logFilter === "all" || entry.stream === logFilter),
+    [selectedLogs, logFilter],
+  );
+
+  useEffect(() => {
+    if (!autoScroll) return;
+    const viewer = logViewerRef.current;
+    if (viewer) viewer.scrollTop = viewer.scrollHeight;
+  }, [visibleLogs, autoScroll]);
 
   const running = serverList.filter((server) => server.state === "running").length;
   const failed = serverList.filter((server) => server.state === "failed").length;
@@ -85,6 +108,10 @@ export default function App() {
       setPending(null);
     }
   };
+
+  const displayedUptime = selected?.state === "running" && selected.uptime_ms !== null
+    ? selected.uptime_ms + uptimeTick * 1000
+    : selected?.uptime_ms ?? null;
 
   return (
     <main className="shell">
@@ -138,7 +165,7 @@ export default function App() {
 
               <dl className="metric-grid">
                 <div><dt>PID</dt><dd>{selected.pid ?? "—"}</dd></div>
-                <div><dt>Uptime</dt><dd>{formatUptime(selected.uptime_ms)}</dd></div>
+                <div><dt>Uptime</dt><dd>{formatUptime(displayedUptime)}</dd></div>
                 <div><dt>Restarts</dt><dd>{selected.restart_count}</dd></div>
                 <div><dt>Crashes</dt><dd>{selected.crash_count}</dd></div>
                 <div><dt>Last exit</dt><dd>{selected.last_exit_code ?? "—"}</dd></div>
@@ -159,12 +186,40 @@ export default function App() {
 
               <section className="logs">
                 <div className="logs-header">
-                  <h3>Recent logs</h3>
-                  <span>{selectedLogs.length} entries</span>
+                  <div>
+                    <h3>Recent logs</h3>
+                    <span>{visibleLogs.length} visible / {selectedLogs.length} total</span>
+                  </div>
+                  <div className="log-controls">
+                    <label>
+                      Stream
+                      <select value={logFilter} onChange={(event) => setLogFilter(event.target.value as LogFilter)}>
+                        <option value="all">All</option>
+                        <option value="stdout">stdout</option>
+                        <option value="stderr">stderr</option>
+                        <option value="studio">studio</option>
+                      </select>
+                    </label>
+                    <label className="toggle-control">
+                      <input
+                        type="checkbox"
+                        checked={autoScroll}
+                        onChange={(event) => setAutoScroll(event.target.checked)}
+                      />
+                      Auto-scroll
+                    </label>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={() => selectedId && setLogs((current) => ({ ...current, [selectedId]: [] }))}
+                    >
+                      Clear view
+                    </button>
+                  </div>
                 </div>
-                <div className="log-viewer">
-                  {selectedLogs.length === 0 && <p className="log-empty">No logs yet.</p>}
-                  {selectedLogs.map((entry) => (
+                <div className="log-viewer" ref={logViewerRef}>
+                  {visibleLogs.length === 0 && <p className="log-empty">No logs in this view.</p>}
+                  {visibleLogs.map((entry) => (
                     <div className={`log-line log-${entry.stream}`} key={entry.sequence}>
                       <time>{new Date(entry.timestamp_ms).toLocaleTimeString()}</time>
                       <span className="log-stream">{entry.stream}</span>

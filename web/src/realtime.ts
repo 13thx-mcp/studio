@@ -7,6 +7,10 @@ export interface RealtimeCallbacks {
   onState: (state: ConnectionState) => void;
 }
 
+export function nextRetryDelay(currentMs: number): number {
+  return Math.min(currentMs * 2, 10_000);
+}
+
 export function connectRealtime(callbacks: RealtimeCallbacks): () => void {
   let socket: WebSocket | null = null;
   let stopped = false;
@@ -40,7 +44,7 @@ export function connectRealtime(callbacks: RealtimeCallbacks): () => void {
       }
       callbacks.onState("reconnecting");
       reconnectTimer = window.setTimeout(connect, retryMs);
-      retryMs = Math.min(retryMs * 2, 10_000);
+      retryMs = nextRetryDelay(retryMs);
     };
 
     socket.onerror = () => socket?.close();
