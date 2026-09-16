@@ -8,6 +8,18 @@ pub enum StudioError {
     #[error("MCP server not found: {0}")]
     NotFound(String),
 
+    #[error("duplicate MCP registration: {0}")]
+    Duplicate(String),
+
+    #[error("MCP server is disabled: {0}")]
+    Disabled(String),
+
+    #[error("MCP registry mutation conflicts with runtime state: {0}")]
+    Conflict(String),
+
+    #[error("unsupported MCP project: {0}")]
+    Unsupported(String),
+
     #[error("MCP server is already running: {0}")]
     AlreadyRunning(String),
 
@@ -22,6 +34,12 @@ pub enum StudioError {
 
     #[error("TOML decode error: {0}")]
     Toml(#[from] toml::de::Error),
+
+    #[error("TOML encode error: {0}")]
+    TomlEncode(#[from] toml::ser::Error),
+
+    #[error("JSON decode error: {0}")]
+    Json(#[from] serde_json::Error),
 }
 
 pub type StudioResult<T> = Result<T, StudioError>;

@@ -21,6 +21,8 @@ pub struct StudioConfig {
     #[serde(default = "default_stop_timeout_ms")]
     pub stop_timeout_ms: u64,
     #[serde(default)]
+    pub registry: RegistryConfig,
+    #[serde(default)]
     pub mcp: BTreeMap<String, McpServerConfig>,
     #[serde(default)]
     pub tunnel: TunnelConfig,
@@ -32,6 +34,7 @@ impl Default for StudioConfig {
             server: ServerConfig::default(),
             log_capacity: default_log_capacity(),
             stop_timeout_ms: default_stop_timeout_ms(),
+            registry: RegistryConfig::default(),
             mcp: default_mcp_registry(),
             tunnel: TunnelConfig::default(),
         }
@@ -48,6 +51,23 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             listen_addr: default_listen_addr(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegistryConfig {
+    #[serde(default = "default_registry_path")]
+    pub path: PathBuf,
+    #[serde(default = "default_mcp_root")]
+    pub mcp_root: PathBuf,
+}
+
+impl Default for RegistryConfig {
+    fn default() -> Self {
+        Self {
+            path: default_registry_path(),
+            mcp_root: default_mcp_root(),
         }
     }
 }
@@ -71,6 +91,12 @@ fn default_log_capacity() -> usize {
 }
 fn default_stop_timeout_ms() -> u64 {
     3_000
+}
+fn default_registry_path() -> PathBuf {
+    PathBuf::from("data/registry.toml")
+}
+fn default_mcp_root() -> PathBuf {
+    PathBuf::from("..")
 }
 
 fn default_mcp_registry() -> BTreeMap<String, McpServerConfig> {
@@ -124,6 +150,16 @@ impl StudioConfig {
         if self.stop_timeout_ms == 0 {
             return Err(StudioError::Config(
                 "stop_timeout_ms must be greater than zero".into(),
+            ));
+        }
+        if self.registry.path.as_os_str().is_empty() {
+            return Err(StudioError::Config(
+                "registry.path must not be empty".into(),
+            ));
+        }
+        if self.registry.mcp_root.as_os_str().is_empty() {
+            return Err(StudioError::Config(
+                "registry.mcp_root must not be empty".into(),
             ));
         }
         for (id, server) in &self.mcp {
@@ -201,6 +237,13 @@ mod tests {
             },
             ..StudioConfig::default()
         };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_empty_registry_paths() {
+        let mut config = StudioConfig::default();
+        config.registry.path = PathBuf::new();
         assert!(config.validate().is_err());
     }
 }

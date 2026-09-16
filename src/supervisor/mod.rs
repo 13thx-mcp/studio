@@ -1,6 +1,5 @@
 use std::{
     collections::{BTreeMap, VecDeque},
-    path::{Path, PathBuf},
     process::Stdio,
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -15,10 +14,9 @@ use tokio::{
 };
 
 use crate::{
-    config::McpServerConfig,
     error::{StudioError, StudioResult},
     realtime::{EventHub, StudioEvent},
-    registry::Registry,
+    registry::{RegisteredMcp, Registry},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -129,34 +127,26 @@ impl RuntimeState {
 
 #[derive(Clone)]
 pub struct Supervisor {
-    registry: Arc<Registry>,
+    registry: Registry,
     runtimes: Arc<RwLock<BTreeMap<String, Arc<Mutex<RuntimeState>>>>>,
     events: EventHub,
     log_capacity: usize,
     stop_timeout: Duration,
-    base_dir: Arc<PathBuf>,
 }
 
 impl Supervisor {
-    pub fn new(
-        registry: Registry,
-        log_capacity: usize,
-        stop_timeout: Duration,
-        base_dir: PathBuf,
-    ) -> Self {
-        let runtimes = registry
-            .ids()
-            .map(|id| (id.clone(), Arc::new(Mutex::new(RuntimeState::default()))))
-            .collect();
-
+    pub fn new(registry: Registry, log_capacity: usize, stop_timeout: Duration) -> Self {
         Self {
-            registry: Arc::new(registry),
-            runtimes: Arc::new(RwLock::new(runtimes)),
+            registry,
+            runtimes: Arc::new(RwLock::new(BTreeMap::new())),
             events: EventHub::default(),
             log_capacity,
             stop_timeout,
-            base_dir: Arc::new(base_dir),
         }
+    }
+
+    pub fn registry(&self) -> &Registry {
+        &self.registry
     }
 
     pub fn subscribe_events(&self) -> broadcast::Receiver<StudioEvent> {
@@ -164,7 +154,7 @@ impl Supervisor {
     }
 
     pub async fn list(&self) -> Vec<ProcessStatus> {
-        let ids: Vec<String> = self.registry.ids().cloned().collect();
+        let ids = self.registry.ids();
         let mut result = Vec::with_capacity(ids.len());
         for id in ids {
             if let Ok(status) = self.status(&id).await {
@@ -179,27 +169,49 @@ impl Supervisor {
             .registry
             .get(id)
             .ok_or_else(|| StudioError::NotFound(id.to_owned()))?;
-        let runtime = self.runtime(id).await?;
+        let runtime = self.runtime_or_create(id).await;
         let state = runtime.lock().await;
         Ok(state.status(id, &config.name))
+    }
+
+    pub async fn is_active(&self, id: &str) -> StudioResult<bool> {
+        let status = self.status(id).await?;
+        Ok(matches!(
+            status.state,
+            ProcessState::Starting | ProcessState::Running | ProcessState::Stopping
+        ))
+    }
+
+    pub async fn remove_inactive_runtime(&self, id: &str) -> StudioResult<()> {
+        let runtime = self.runtimes.read().await.get(id).cloned();
+        if let Some(runtime) = runtime {
+            let state = runtime.lock().await;
+            if matches!(
+                state.state,
+                ProcessState::Starting | ProcessState::Running | ProcessState::Stopping
+            ) {
+                return Err(StudioError::Conflict(format!(
+                    "{id} must be stopped before unregistering"
+                )));
+            }
+            drop(state);
+            self.runtimes.write().await.remove(id);
+        }
+        Ok(())
     }
 
     pub async fn logs(&self, id: &str) -> StudioResult<Vec<LogEntry>> {
         self.registry
             .get(id)
             .ok_or_else(|| StudioError::NotFound(id.to_owned()))?;
-        let runtime = self.runtime(id).await?;
+        let runtime = self.runtime_or_create(id).await;
         let state = runtime.lock().await;
         Ok(state.logs.iter().cloned().collect())
     }
 
     pub async fn start(&self, id: &str) -> StudioResult<ProcessStatus> {
-        let config = self
-            .registry
-            .get(id)
-            .cloned()
-            .ok_or_else(|| StudioError::NotFound(id.to_owned()))?;
-        let runtime = self.runtime(id).await?;
+        let (config, working_dir, command_path) = self.registry.validate_for_spawn(id)?;
+        let runtime = self.runtime_or_create(id).await;
 
         let (generation, starting_status) = {
             let mut state = runtime.lock().await;
@@ -215,7 +227,14 @@ impl Supervisor {
         self.publish_status(id, starting_status);
 
         match self
-            .spawn_process(id, &config, runtime.clone(), generation)
+            .spawn_process(
+                id,
+                &config,
+                &working_dir,
+                &command_path,
+                runtime.clone(),
+                generation,
+            )
             .await
         {
             Ok(()) => self.status(id).await,
@@ -247,7 +266,7 @@ impl Supervisor {
             .registry
             .get(id)
             .ok_or_else(|| StudioError::NotFound(id.to_owned()))?;
-        let runtime = self.runtime(id).await?;
+        let runtime = self.runtime_or_create(id).await;
 
         let (pid, stopping_status, log_entry) = {
             let mut state = runtime.lock().await;
@@ -298,6 +317,9 @@ impl Supervisor {
     }
 
     pub async fn restart(&self, id: &str) -> StudioResult<ProcessStatus> {
+        if self.registry.get(id).is_some_and(|config| !config.enabled) {
+            return Err(StudioError::Disabled(id.to_owned()));
+        }
         let status = self.status(id).await?;
         if matches!(status.state, ProcessState::Running | ProcessState::Starting) {
             self.stop(id).await?;
@@ -305,7 +327,7 @@ impl Supervisor {
             self.wait_for_terminal_state(id).await?;
         }
 
-        let runtime = self.runtime(id).await?;
+        let runtime = self.runtime_or_create(id).await;
         {
             let mut state = runtime.lock().await;
             state.restart_count = state.restart_count.saturating_add(1);
@@ -314,7 +336,7 @@ impl Supervisor {
     }
 
     pub async fn shutdown_all(&self) {
-        let ids: Vec<String> = self.registry.ids().cloned().collect();
+        let ids = self.registry.ids();
         for id in ids {
             let Ok(status) = self.status(&id).await else {
                 continue;
@@ -343,42 +365,30 @@ impl Supervisor {
         });
     }
 
-    async fn runtime(&self, id: &str) -> StudioResult<Arc<Mutex<RuntimeState>>> {
-        self.runtimes
-            .read()
-            .await
-            .get(id)
-            .cloned()
-            .ok_or_else(|| StudioError::NotFound(id.to_owned()))
+    async fn runtime_or_create(&self, id: &str) -> Arc<Mutex<RuntimeState>> {
+        if let Some(runtime) = self.runtimes.read().await.get(id).cloned() {
+            return runtime;
+        }
+        let mut runtimes = self.runtimes.write().await;
+        runtimes
+            .entry(id.to_owned())
+            .or_insert_with(|| Arc::new(Mutex::new(RuntimeState::default())))
+            .clone()
     }
 
     async fn spawn_process(
         &self,
         id: &str,
-        config: &McpServerConfig,
+        config: &RegisteredMcp,
+        working_dir: &std::path::Path,
+        command_path: &std::path::Path,
         runtime: Arc<Mutex<RuntimeState>>,
         generation: u64,
     ) -> StudioResult<()> {
-        let working_dir = resolve_path(&self.base_dir, &config.working_dir);
-        let command_path = resolve_path(&self.base_dir, &config.command);
-
-        if !working_dir.is_dir() {
-            return Err(StudioError::Process(format!(
-                "{id}: working directory does not exist: {}",
-                working_dir.display()
-            )));
-        }
-        if !command_path.is_file() {
-            return Err(StudioError::Process(format!(
-                "{id}: executable does not exist: {}",
-                command_path.display()
-            )));
-        }
-
-        let mut command = Command::new(&command_path);
+        let mut command = Command::new(command_path);
         command
             .args(&config.args)
-            .current_dir(&working_dir)
+            .current_dir(working_dir)
             .envs(&config.env)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -503,14 +513,6 @@ impl Supervisor {
             }
             sleep(Duration::from_millis(25)).await;
         }
-    }
-}
-
-fn resolve_path(base_dir: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        path.to_owned()
-    } else {
-        base_dir.join(path)
     }
 }
 

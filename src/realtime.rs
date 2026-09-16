@@ -28,6 +28,8 @@ pub enum StudioEvent {
     TunnelLog {
         entry: TunnelLogEntry,
     },
+    RegistryChanged,
+    DiscoveryChanged,
     ResyncRequired,
 }
 

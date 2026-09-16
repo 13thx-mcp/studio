@@ -4,6 +4,12 @@ stop_timeout_ms = 3000
 [server]
 listen_addr = "127.0.0.1:18100"
 
+# Milestone 4 persistent registry. The path is owned by Studio and is written
+# atomically. mcp_root is the only discovery/registration root.
+[registry]
+path = "data/registry.toml"
+mcp_root = ".."
+
 [tunnel]
 name = "Secure tunnel"
 runtime = "../tunnel-client/tunnel-client-runtime-cloudflared"
@@ -16,6 +22,8 @@ config_file = "../tunnel-client/config.yaml"
 # TUNNEL_TOKEN = { from_env = "MCP_TUNNEL_TOKEN" }
 # CLOUDFLARED_CREDENTIAL = { from_file = "../secrets/cloudflared-token" }
 
+# Legacy static MCP entries are used only to bootstrap data/registry.toml when
+# no persistent registry exists. Once registry.toml exists, it is authoritative.
 [mcp.blender]
 name = "Blender"
 command = "../blender/target/debug/rust-mcp-blender"
