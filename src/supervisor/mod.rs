@@ -281,10 +281,9 @@ impl Supervisor {
             if matches!(
                 status.state,
                 ProcessState::Running | ProcessState::Starting | ProcessState::Stopping
-            ) {
-                if let Err(error) = self.stop(&id).await {
-                    tracing::error!(mcp_id = id, %error, "failed to stop MCP during Studio shutdown");
-                }
+            ) && let Err(error) = self.stop(&id).await
+            {
+                tracing::error!(mcp_id = id, %error, "failed to stop MCP during Studio shutdown");
             }
         }
     }
@@ -340,6 +339,7 @@ impl Supervisor {
         let pid = child.id().ok_or_else(|| {
             StudioError::Process(format!("{id}: spawned process did not report a PID"))
         })?;
+        let stdin = child.stdin.take();
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
 
@@ -383,6 +383,11 @@ impl Supervisor {
         let id_owned = id.to_owned();
         let capacity = self.log_capacity;
         tokio::spawn(async move {
+            // Keep the child's stdin pipe alive while waiting for the process.
+            // Tokio's Child::wait closes an owned stdin handle before waiting;
+            // taking it out and retaining this guard prevents stdio MCP servers
+            // from observing an immediate EOF before an MCP client connects.
+            let _stdin_guard = stdin;
             let result = child.wait().await;
             let mut state = runtime.lock().await;
             if state.generation != generation {

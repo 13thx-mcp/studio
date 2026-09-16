@@ -4,11 +4,11 @@ All notable changes to MCP Studio will be documented here.
 
 The project follows Semantic Versioning once public/pre-release artifacts begin.
 
-## [0.1.0] - Unreleased
+## [0.1.0] - 2026-09-16
 
 ### Milestone
 
-- Milestone 1 — Core Process Supervisor — implementation complete; verification pending.
+- Milestone 1 — Core Process Supervisor — completed and closed.
 
 ### Added
 
@@ -32,6 +32,21 @@ The project follows Semantic Versioning once public/pre-release artifacts begin.
 - Added `nix` signal support for Unix process termination.
 - Studio example configuration now includes static Blender/Filesystem registry entries, log capacity, and stop timeout.
 - Architecture and threat-model documents updated for active process supervision.
+- Supervisor shutdown logic adjusted to satisfy the zero-warning clippy gate on Rust `1.98.1`.
+
+### Verified
+
+- `cargo check`
+- `cargo fmt --all -- --check`
+- `cargo clippy --all-targets --all-features -- -D warnings`
+- `cargo test --all-targets --all-features`
+- `cargo build --all-targets --all-features`
+- `cargo audit`
+- `cargo clippy --locked --all-targets --all-features -- -D warnings`
+- `cargo test --locked --all-targets --all-features`
+- `cargo build --locked --all-targets --all-features`
+- Automated tests: `11 passed; 0 failed`.
+- Manual MCP lifecycle API smoke test and Studio-owned child cleanup on shutdown.
 
 ### Security
 

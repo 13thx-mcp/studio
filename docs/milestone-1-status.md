@@ -2,7 +2,7 @@
 
 ## Status
 
-**IMPLEMENTED — runtime verification pending.**
+**COMPLETE — re-closed after stdio lifecycle regression fix and manual re-verification on 2026-09-16.**
 
 Target version: `v0.1.0`
 
@@ -30,6 +30,108 @@ Target version: `v0.1.0`
 - Structured API errors for not-found and lifecycle conflicts.
 - Lifecycle integration tests using real child processes on Unix.
 
+## Regression Found and Resolved
+
+A manual smoke test exposed a stdio lifecycle bug where the Filesystem MCP briefly entered `running` and then exited with:
+
+```text
+Error: connection closed: initialize request
+```
+
+Observed failing lifecycle:
+
+```text
+start -> running -> failed(exit code 1)
+```
+
+Root cause: the supervisor left the piped child stdin owned by `tokio::process::Child` while immediately awaiting `Child::wait()`. Tokio closes an owned stdin handle while waiting to avoid deadlocks, causing the rmcp stdio server to observe EOF before any MCP client could send `initialize`.
+
+Fix: `src/supervisor/mod.rs` now explicitly takes `ChildStdin` and retains it in the monitor task for the entire process lifetime. stdin is dropped only when the child exits.
+
+Correct lifecycle after the fix:
+
+```text
+start -> running
+restart -> running with replacement PID
+stop -> stopped
+```
+
+## Automated Verification
+
+The quality gates were rerun successfully after the fix with Rust `1.98.1`:
+
+```bash
+cargo check
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets --all-features
+cargo build --all-targets --all-features
+cargo audit
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked --all-targets --all-features
+cargo build --locked --all-targets --all-features
+```
+
+Automated test baseline:
+
+- Library/API tests: `4 passed; 0 failed`.
+- Supervisor lifecycle integration tests: `7 passed; 0 failed`.
+- Total observed tests: `11 passed; 0 failed`.
+
+## Manual Smoke Verification
+
+Filesystem start was verified to remain alive beyond the initial spawn:
+
+```text
+start response:
+state=running
+pid=75934
+restart_count=0
+crash_count=0
+
+status after ~1 second:
+state=running
+pid=75934
+uptime_ms≈1014
+crash_count=0
+```
+
+Restart was verified to replace the process and preserve healthy state:
+
+```text
+restart response:
+state=running
+pid=76395
+restart_count=1
+crash_count=0
+
+status after ~1 second:
+state=running
+pid=76395
+uptime_ms≈1012
+restart_count=1
+crash_count=0
+```
+
+Stop was verified successfully:
+
+```text
+state=stopped
+pid=null
+uptime_ms=null
+restart_count=1
+crash_count=0
+last_error=null
+```
+
+This confirms that:
+
+- stdio remains open while the MCP process is supervised,
+- restart creates a replacement PID,
+- restart does not falsely increment crash count,
+- stop completes cleanly,
+- final lifecycle state is correct.
+
 ## API
 
 ```text
@@ -43,73 +145,9 @@ POST /api/mcp/{id}/restart
 GET  /api/mcp/{id}/logs
 ```
 
-## Verification Gate
-
-Before Milestone 1 is closed, run from `mcp-server/studio`:
-
-```bash
-cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets --all-features
-cargo build --all-targets --all-features
-cargo audit
-```
-
-Because Milestone 1 adds `nix` and Tokio process/sync/time features, allow Cargo to update `Cargo.lock` once, then verify the reproducible locked gate:
-
-```bash
-cargo clippy --locked --all-targets --all-features -- -D warnings
-cargo test --locked --all-targets --all-features
-cargo build --locked --all-targets --all-features
-```
-
-## Manual Smoke Test
-
-Build the managed MCP servers first:
-
-```bash
-cd mcp-server/blender
-cargo build
-cd ../filesystem
-cargo build
-cd ../studio
-cargo run
-```
-
-In another terminal:
-
-```bash
-curl http://127.0.0.1:18100/api/status
-curl http://127.0.0.1:18100/api/mcp
-```
-
-Filesystem lifecycle:
-
-```bash
-curl -X POST http://127.0.0.1:18100/api/mcp/filesystem/start
-curl http://127.0.0.1:18100/api/mcp/filesystem
-curl http://127.0.0.1:18100/api/mcp/filesystem/logs
-curl -X POST http://127.0.0.1:18100/api/mcp/filesystem/restart
-curl -X POST http://127.0.0.1:18100/api/mcp/filesystem/stop
-```
-
-Blender lifecycle may be started without Blender bridge availability, but bridge-backed MCP tools will report the bridge as unavailable until the Blender add-on is running.
-
-## Required Test Coverage
-
-Automated lifecycle tests currently cover:
-
-- Successful start and stop.
-- Restart creates a replacement PID and increments restart count.
-- Unexpected non-zero exit transitions to failed and increments crash count.
-- Invalid executable path.
-- Duplicate start.
-- Stop when already stopped.
-- Studio-style shutdown of owned processes.
-
 ## Known Milestone 1 Constraints
 
-- Process signaling is currently Unix-oriented (macOS/Linux).
+- Process signaling is Unix-oriented (macOS/Linux) in this milestone.
 - Registry is static configuration; persistence and discovery are Milestone 4.
 - Logs are memory-only; persistence is Milestone 5.
 - No auto-restart policy yet; hardening/backoff is Milestone 6.
@@ -117,15 +155,19 @@ Automated lifecycle tests currently cover:
 - No tunnel management; that begins in Milestone 3.
 - No web dashboard; that begins in Milestone 2.
 
-## Closure Criteria
+## Closure Decision
 
-Milestone 1 can be marked COMPLETE after:
+Milestone 1 is formally re-closed because:
 
-- format gate passes,
-- clippy with `-D warnings` passes,
-- all tests pass,
-- build passes,
-- dependency audit has no unresolved Critical/High finding,
-- locked gates pass with committed `Cargo.lock`,
-- manual API smoke test succeeds for the managed MCP lifecycle,
-- Studio shutdown leaves no Studio-owned MCP process running.
+- all automated format/lint/test/build/audit gates pass,
+- locked reproducibility gates pass,
+- the stdio lifecycle regression has been resolved,
+- the Filesystem MCP remains running after startup,
+- restart creates a healthy replacement process,
+- stop reaches the correct stopped state,
+- no false crash is recorded during normal restart/stop lifecycle,
+- documentation reflects the final verified behavior.
+
+## Next Milestone
+
+Proceed to **Milestone 2 — MVP Web Dashboard**.
