@@ -1,37 +1,228 @@
 # MCP Studio Roadmap
 
-> Scope: Web-based control plane for monitoring and managing MCP servers and secure tunnels under `mcp-server/`.
+> Scope: local-first control plane for MCP runtime lifecycle, configuration, secure tunnel lifecycle, release/update management, fleet state, observability, and operational safety.
 >
-> Initial managed MCP servers: `blender` and `filesystem`.
+> Current release baseline: **v0.4.0 — Registry, Configuration & Auto-Discovery complete**.
 >
-> Target maturity path: **Foundation → MVP → Alpha → Beta → Release Candidate → Production Grade → Scale & Extensibility**.
+> Current deployment model: project source repositories under `mcp-server/<project>`, flat Rust MCP executables under `mcp-server/bin`, and non-MCP runtime/config/state under `mcp-server/runtime`.
+>
+> Target maturity path: **Foundation → Local Control Plane → Runtime Distribution → Fleet-Safe Operations → Telemetry → Release Candidate → Production Grade → Multi-host Scale**.
 
 ---
 
-## 1. Product Goal
+# 1. Product Goal
 
-MCP Studio is a local-first web service that provides a single control plane for MCP server lifecycle, secure tunnel lifecycle, configuration, discovery, monitoring, usage statistics, logs, and operational safety.
+MCP Studio is a local-first web control plane for operating an MCP stack safely and reproducibly on development hosts and source-less runtime hosts.
 
-The first production-grade release must support:
+Studio must eventually provide one operational surface for:
 
-- Start / stop / restart MCP servers.
-- Detect crashes and optionally auto-restart MCP processes.
-- Track MCP process state, uptime, restarts, failures, and usage metrics.
-- Start / stop / restart the secure tunnel runtime.
-- Monitor tunnel state and reconnect events.
-- View live and historical metrics.
-- View structured logs and recent operational events.
-- Edit validated MCP configuration from the web UI.
-- Scan paths below `mcp-server/` and discover new MCP projects.
-- Review and explicitly approve discovered MCP servers before registration.
-- Persist registry, configuration, statistics, and audit history.
-- Operate safely without leaking secrets to the browser or logs.
+- MCP lifecycle management;
+- secure tunnel lifecycle management;
+- persistent MCP registration and configuration;
+- project discovery on development hosts;
+- installed runtime inventory on source-less hosts;
+- release/version visibility;
+- safe component updates and rollback;
+- fleet desired-state and drift visibility;
+- live and historical metrics;
+- logs and audit history;
+- gateway traffic telemetry where directly observable;
+- diagnostics, backup, migration, and recovery.
+
+The production design must explicitly support two host classes.
+
+## 1.1 Development host
+
+A development host may contain both source and installed runtime artifacts:
+
+```text
+mcp-server/
+├── filesystem/
+├── git/
+├── exec/
+├── gateway/
+├── studio/
+├── fleet/
+├── tunnel-client/        # official OpenAI source checkout, optional for runtime
+├── blender/
+│
+├── bin/                  # flat Rust MCP executables only
+│   ├── rust-mcp-filesystem
+│   ├── rust-mcp-git
+│   ├── rust-mcp-exec
+│   ├── rust-mcp-gateway
+│   └── rust-mcp-blender
+│
+└── runtime/              # non-MCP executable/config/state
+    ├── gateway/servers.d/
+    ├── studio/
+    ├── tunnel-client/
+    └── fleet/
+```
+
+Development hosts may build locally and install artifacts into the runtime layout.
+
+## 1.2 Runtime-only host
+
+A runtime-only host must be able to operate without Rust, Cargo, Node.js, pnpm, source repositories, `target/`, or `node_modules`.
+
+Minimum runtime-only layout:
+
+```text
+mcp-server/
+├── bin/
+│   ├── rust-mcp-filesystem
+│   ├── rust-mcp-git
+│   ├── rust-mcp-exec
+│   └── rust-mcp-gateway
+│
+└── runtime/
+    ├── gateway/servers.d/
+    ├── studio/
+    │   ├── mcp-studio
+    │   ├── studio.toml
+    │   └── data/
+    ├── tunnel-client/
+    │   ├── config.yaml
+    │   ├── current -> releases/vX.Y.Z
+    │   └── releases/
+    └── fleet/
+```
+
+A runtime-only host must update from verified release artifacts rather than by pulling and compiling source.
 
 ---
 
-# 2. SDLC Model
+# 2. Current Baseline — v0.4.0
 
-MCP Studio will follow an iterative SDLC with an explicit quality gate at every milestone.
+Milestones 0–4 are complete and form the current implementation baseline.
+
+## Completed capabilities
+
+### M0 — Foundation & SDLC
+
+- Rust backend architecture and project conventions.
+- Threat model and ADR process.
+- Test, CI, logging, error-handling, and release conventions.
+- Localhost-first security posture.
+
+### M1 — Core Process Supervisor
+
+- MCP start / stop / restart.
+- Studio-owned PID safety.
+- State, uptime, restart, crash, exit-code tracking.
+- stdout/stderr capture and bounded logs.
+- graceful stop with forced termination fallback.
+
+### M2 — Web Dashboard
+
+- React/TypeScript UI.
+- REST + WebSocket operational state.
+- live lifecycle controls and logs.
+- reconnect/resync behavior.
+
+### M3 — Secure Tunnel Management
+
+- tunnel start / stop / restart.
+- tunnel runtime state and logs.
+- constrained executable/config model.
+- secret references and log redaction.
+- tunnel lifecycle isolated from MCP supervisor lifecycle.
+
+### M4 — Registry, Configuration & Auto-Discovery
+
+- schema-versioned persistent MCP registry.
+- metadata-only Rust/Node/Python discovery.
+- explicit review/approval before registration.
+- structured argv; no shell interpolation.
+- path traversal/symlink confinement.
+- dynamic registry integration without Studio restart.
+- enable/disable/edit/unregister behavior.
+- registry/discovery REST API and UI.
+- same-origin browser protections.
+- flat runtime-root compatibility: multiple MCP registrations may safely share the same confined runtime directory while retaining distinct executable names.
+
+Detailed closure evidence remains in `docs/milestone-4-status.md`.
+
+---
+
+# 3. Source of Truth and Release Model
+
+Studio must not treat arbitrary local files as fleet desired state.
+
+## 3.1 Project-owned components
+
+Project-owned repositories are hosted under the `13thx-mcp` GitHub organization:
+
+```text
+13thx-mcp/filesystem
+13thx-mcp/git
+13thx-mcp/exec
+13thx-mcp/gateway
+13thx-mcp/studio
+13thx-mcp/fleet
+```
+
+Each component has an independent semantic version and release lifecycle.
+
+Current release pipeline contract:
+
+```text
+tag vX.Y.Z
+   ↓
+version validation
+   ↓
+format / lint / clippy / test
+   ↓
+macOS native builds
+   ├── darwin-amd64
+   └── darwin-arm64
+   ↓
+versioned tar.gz artifacts
+   ↓
+SHA256SUMS.txt
+   ↓
+GitHub Release
+```
+
+Studio releases additionally package the web dashboard required at runtime.
+
+## 3.2 Official tunnel-client
+
+`tunnel-client` is not forked as a product component.
+
+Source and release authority:
+
+```text
+https://github.com/openai/tunnel-client
+```
+
+Studio/Fleet must consume official OpenAI releases and must support:
+
+- OS/architecture detection;
+- installed-version detection;
+- latest-release discovery;
+- matching release-asset selection;
+- SHA-256 verification;
+- extracted binary version verification;
+- versioned install directories;
+- atomic `current` activation;
+- rollback to a previous verified release;
+- preservation of host-local `config.yaml` and credentials.
+
+## 3.3 Synchronization boundary
+
+For development/source synchronization, the publication boundary is a Git commit pushed to the authoritative repository.
+
+For runtime synchronization, the deployment boundary is a published, verified release artifact.
+
+Uncommitted source changes and locally built unversioned artifacts are never fleet desired state.
+
+---
+
+# 4. SDLC Model
+
+MCP Studio follows an iterative SDLC with an explicit quality gate at every milestone.
 
 ```text
 Plan
@@ -53,998 +244,1071 @@ Operate / Observe
 Feedback → next milestone
 ```
 
-Each milestone must complete the following stages before it is considered done.
-
-## 2.1 Planning
+## 4.1 Planning
 
 - Define scope and exclusions.
 - Identify dependencies.
 - Record risks and assumptions.
-- Define acceptance criteria.
-- Identify migration or rollback requirements.
+- Define testable acceptance criteria.
+- Identify migration and rollback requirements.
+- Identify source-host versus runtime-only-host behavior.
 
-## 2.2 Requirements
+## 4.2 Requirements
 
 - Functional requirements documented.
 - Non-functional requirements documented.
 - API behavior defined where applicable.
-- Error states and recovery behavior defined.
+- Error/recovery states defined.
 - Security boundaries identified.
+- release/update compatibility rules identified.
 
-## 2.3 Design
+## 4.3 Design
 
 - Architecture changes reviewed before implementation.
 - Data model changes documented.
 - Public API changes documented.
-- Process lifecycle/state-machine changes documented.
+- Process/update state-machine changes documented.
 - Threat-model impact reviewed for privileged operations.
+- Long-term decisions recorded as ADRs under `docs/adr/`.
 
-Architecture decisions with long-term impact should be captured as ADRs under:
-
-```text
-docs/adr/
-```
-
-## 2.4 Implementation
+## 4.4 Implementation
 
 - Small modules with explicit responsibilities.
-- No secrets embedded in source code or committed config.
+- No secrets embedded in source or committed config.
 - Structured errors instead of silent failure.
 - Backward-compatible config changes where feasible.
-- Feature flags for risky or incomplete operational features.
+- Feature flags for incomplete/risky operational features.
+- No raw arbitrary command execution from the browser.
 
-## 2.5 Verification
+## 4.5 Verification
 
 Minimum verification layers:
 
-- Unit tests.
-- Integration tests.
-- API tests.
-- Process lifecycle tests.
-- Failure/recovery tests.
-- UI smoke tests for user-facing workflows.
+- unit tests;
+- integration tests;
+- API tests;
+- process lifecycle tests;
+- release/update tests;
+- failure/recovery tests;
+- UI smoke tests.
 
-Production-sensitive features additionally require:
+Production-sensitive changes additionally require:
 
-- Security tests.
-- Restart/recovery tests.
-- Upgrade/migration tests.
-- Load/soak tests where applicable.
+- security tests;
+- restart/recovery tests;
+- upgrade/migration tests;
+- rollback tests;
+- checksum/tamper tests;
+- architecture-selection tests;
+- load/soak tests where applicable.
 
-## 2.6 Security Review
-
-Before each release candidate:
-
-- Dependency audit.
-- Secret leakage review.
-- Path traversal review.
-- Command execution boundary review.
-- Authentication/authorization review when remote access is enabled.
-- Log redaction validation.
-- Tunnel exposure review.
-
-## 2.7 Release
+## 4.6 Release
 
 Every releasable milestone must provide:
 
-- Version number.
-- Changelog entry.
-- Release notes.
-- Migration notes if required.
-- Rollback procedure.
-- Known limitations.
-
-## 2.8 Operations and Feedback
-
-After each milestone release:
-
-- Observe runtime behavior.
-- Record defects and operational friction.
-- Review metrics and failure modes.
-- Feed findings into the next planning cycle.
+- semantic version;
+- changelog entry;
+- release notes;
+- versioned artifacts;
+- checksums;
+- migration notes when required;
+- rollback procedure;
+- known limitations.
 
 ---
 
-# 3. Definition of Ready
+# 5. Definition of Ready
 
 A milestone is ready for implementation when:
 
-- Scope is defined.
-- Acceptance criteria are testable.
-- Major architecture decisions are resolved.
-- Dependencies are known.
-- Security implications are identified.
-- Out-of-scope items are explicit.
+- scope is defined;
+- acceptance criteria are testable;
+- architecture decisions are resolved;
+- dependencies are known;
+- security implications are identified;
+- runtime-only-host implications are identified;
+- migration/rollback behavior is defined;
+- out-of-scope items are explicit.
 
 ---
 
-# 4. Definition of Done
+# 6. Definition of Done
 
 A milestone is complete only when:
 
-- All acceptance criteria pass.
-- New behavior has tests.
-- Existing tests still pass.
-- No known Critical or High severity security issue remains unresolved.
-- Documentation reflects the implemented behavior.
-- Config/data migrations are tested where applicable.
-- Manual smoke test succeeds from a clean checkout/build.
-- Rollback path is known.
+- all acceptance criteria pass;
+- new behavior has tests;
+- existing tests remain green;
+- no known Critical or High severity security issue remains unresolved;
+- documentation reflects the implemented behavior;
+- config/data migrations are tested where applicable;
+- release/update migration is tested where applicable;
+- manual smoke succeeds on a development host;
+- relevant runtime-only smoke succeeds without source dependencies;
+- rollback path is tested or explicitly documented as unsupported;
+- published artifact can be recreated from source.
 
 ---
 
-# 5. Target Architecture
+# 7. Target Architecture
 
 ```text
-Browser
-   │
-   │ HTTP / WebSocket
-   ▼
-┌──────────────────────── MCP Studio ──────────────────────────┐
-│                                                             │
-│  Web UI                                                     │
-│     │                                                       │
-│  HTTP / WS API                                              │
-│     │                                                       │
-│  ┌──────────────┐   ┌────────────────┐   ┌───────────────┐  │
-│  │ MCP Registry │   │ MCP Supervisor │   │ Tunnel Manager│  │
-│  └──────┬───────┘   └───────┬────────┘   └───────┬───────┘  │
-│         │                   │                    │           │
-│  ┌──────▼───────┐    ┌──────▼───────┐     ┌──────▼──────┐   │
-│  │ Discovery    │    │ Metrics/Logs │     │ cloudflared │   │
-│  └──────────────┘    └──────┬───────┘     └─────────────┘   │
-│                              │                               │
-│                         ┌────▼────┐                          │
-│                         │ SQLite  │                          │
-│                         └─────────┘                          │
-└─────────────────────────────────────────────────────────────┘
-              │                         │
-              ▼                         ▼
-        Blender MCP                Filesystem MCP
-           stdio                       stdio
+                           GitHub
+        ┌────────────────────┴────────────────────┐
+        │                                         │
+  13thx-mcp releases                    openai/tunnel-client releases
+        │                                         │
+        └────────────────────┬────────────────────┘
+                             │ verified artifacts
+                             ▼
+┌──────────────────────── MCP Studio ──────────────────────────────┐
+│                                                                 │
+│ Web UI / REST / WebSocket                                       │
+│                                                                 │
+│ ┌──────────────┐ ┌───────────────┐ ┌─────────────────────────┐ │
+│ │ MCP Registry │ │ MCP Supervisor│ │ Release / Update Manager│ │
+│ └──────┬───────┘ └───────┬───────┘ └────────────┬────────────┘ │
+│        │                 │                      │              │
+│ ┌──────▼──────┐   ┌──────▼──────┐      ┌────────▼────────┐    │
+│ │ Discovery   │   │ Logs/Metrics│      │ Fleet State/Drift│    │
+│ └─────────────┘   └──────┬──────┘      └─────────────────┘    │
+│                          │                                     │
+│ ┌────────────────┐  ┌────▼────┐                                │
+│ │ Tunnel Manager │  │ SQLite  │                                │
+│ └───────┬────────┘  └─────────┘                                │
+└─────────┼───────────────────────────────────────────────────────┘
+          │
+          ▼
+  runtime/tunnel-client
+
+          Runtime execution layout
+
+mcp-server/bin/
+├── rust-mcp-filesystem
+├── rust-mcp-git
+├── rust-mcp-exec
+├── rust-mcp-gateway
+└── rust-mcp-blender
+
+mcp-server/runtime/
+├── gateway/servers.d/
+├── studio/
+├── tunnel-client/
+└── fleet/
 ```
 
-Initial technology direction:
+Technology baseline:
 
-- Backend: Rust.
-- Async runtime: Tokio.
-- HTTP/WebSocket: Axum.
-- Persistence: SQLite.
-- Frontend: React + TypeScript + Vite.
-- Local bind by default: `127.0.0.1`.
-- MCP process transport initially: stdio.
-- Secure tunnel runtime: existing `mcp-server/tunnel-client` bundle.
-
-Technology choices may change only through an ADR once implementation begins.
-
----
-
-# 6. Milestone Roadmap
+- backend: Rust;
+- async runtime: Tokio;
+- HTTP/WebSocket: Axum;
+- frontend: React + TypeScript + Vite;
+- persistence target: SQLite;
+- local bind default: `127.0.0.1`;
+- MCP child transport: stdio;
+- project-owned release source: `13thx-mcp/*` GitHub Releases;
+- tunnel release source: official `openai/tunnel-client` GitHub Releases.
 
 ---
 
-## Milestone 0 — Foundation & SDLC Bootstrap
-
-**Target:** `v0.0.x`
-
-### Goal
-
-Establish engineering standards, repository structure, architecture boundaries, test strategy, and release discipline before feature implementation.
-
-### Deliverables
-
-- `ROADMAP.md`.
-- Initial architecture document.
-- Initial threat model.
-- ADR template.
-- Contribution/development guide.
-- Coding conventions.
-- Logging conventions.
-- Error handling conventions.
-- Configuration conventions.
-- Test directory/layout.
-- CI workflow skeleton.
-- Build commands documented.
-
-### Proposed project structure
-
-```text
-studio/
-├── Cargo.toml
-├── README.md
-├── ROADMAP.md
-├── CHANGELOG.md
-├── docs/
-│   ├── architecture.md
-│   ├── threat-model.md
-│   └── adr/
-├── src/
-│   ├── api/
-│   ├── config/
-│   ├── discovery/
-│   ├── metrics/
-│   ├── registry/
-│   ├── storage/
-│   ├── supervisor/
-│   └── tunnel/
-├── tests/
-└── web/
-```
-
-### Key decisions
-
-- Studio owns lifecycle management only for processes it starts.
-- Arbitrary shell execution is prohibited from the web interface.
-- MCP auto-discovery never auto-executes a newly found project.
-- Secrets must remain server-side.
-- Studio binds to localhost by default.
-
-### Verification
-
-- Clean project builds.
-- Unit test framework executes.
-- CI runs formatting, linting, tests, and dependency checks.
-
-### Exit Criteria
-
-- Architecture and threat model reviewed.
-- Repository conventions agreed.
-- CI baseline green.
+# 8. Milestone Roadmap
 
 ---
 
-## Milestone 1 — MVP Core Process Supervisor
+## Milestones 0–4 — COMPLETE
 
-**Target:** `v0.1.0`
+**Current released baseline:** `v0.4.0`
 
-### Goal
-
-Manage the two existing MCP servers reliably from a single backend service.
-
-### Scope
-
-Initial managed servers:
-
-- `blender`
-- `filesystem`
-
-### Features
-
-- MCP registry.
-- Static configuration for known MCP servers.
-- Start MCP process.
-- Stop MCP process.
-- Restart/reconnect MCP process.
-- PID tracking.
-- Process state tracking.
-- Exit-code tracking.
-- Uptime tracking.
-- Restart count.
-- Crash count.
-- Graceful stop with forced-kill fallback.
-- Capture stdout/stderr.
-- In-memory recent log ring buffer.
-- Basic REST API.
-- Basic health endpoint.
-
-### Initial lifecycle model
-
-```text
-STOPPED
-   │ start
-   ▼
-STARTING
-   │ success
-   ▼
-RUNNING ───────────────┐
-   │ stop              │ unexpected exit
-   ▼                   ▼
-STOPPING             FAILED
-   │                   │
-   ▼                   │ restart policy
-STOPPED ◄──────────────┘
-```
-
-### Minimum API
-
-```text
-GET  /api/status
-GET  /api/mcp
-GET  /api/mcp/:id
-POST /api/mcp/:id/start
-POST /api/mcp/:id/stop
-POST /api/mcp/:id/restart
-GET  /api/mcp/:id/logs
-```
-
-### Tests
-
-- Start process successfully.
-- Stop process successfully.
-- Restart process successfully.
-- Detect unexpected exit.
-- Invalid executable path.
-- Duplicate start request.
-- Stop already-stopped process.
-- Studio shutdown terminates managed child processes according to policy.
-
-### Out of Scope
-
-- Historical metrics.
-- Full UI.
-- Tunnel control.
-- MCP gateway/proxy.
-- Remote authentication.
-
-### Exit Criteria
-
-From one backend process it is possible to reliably start, stop, restart, and inspect both Blender and Filesystem MCP servers.
+See Section 2 and milestone status documents for closure evidence.
 
 ---
 
-## Milestone 2 — MVP Web Dashboard
-
-**Target:** `v0.2.0`
-
-### Goal
-
-Provide an operational web interface for core MCP management.
-
-### Features
-
-- Dashboard overview.
-- MCP list.
-- Per-server detail page.
-- Start / stop / restart controls.
-- Live process state.
-- Live log viewer.
-- Uptime and restart counters.
-- Last exit/error display.
-- WebSocket live updates.
-- Responsive layout for desktop-first operation.
-
-### UX Requirements
-
-Potentially destructive operations must clearly show:
-
-- Target MCP server.
-- Current state.
-- Requested action.
-
-No UI component may render secret environment variable values.
-
-### Tests
-
-- API/UI smoke test.
-- WebSocket reconnect test.
-- UI refresh preserves correct backend state.
-- Action button state reflects process state.
-
-### Exit Criteria
-
-A user can manage the two MCP servers without using the command line after starting Studio.
-
----
-
-## Milestone 3 — Secure Tunnel Management
-
-**Target:** `v0.3.0`
-
-### Goal
-
-Manage the existing secure tunnel runtime safely through Studio.
-
-### Features
-
-- Detect tunnel runtime binary.
-- Start tunnel.
-- Stop tunnel.
-- Restart tunnel.
-- Tunnel PID/state.
-- Tunnel uptime.
-- Exit/restart counters.
-- Capture structured tunnel logs.
-- Track reconnect events where detectable.
-- Configure tunnel startup arguments using a constrained schema.
-- Environment/file secret references.
-- Tunnel page in the UI.
-
-### Security Requirements
-
-- Allow-list the tunnel executable.
-- Do not accept raw shell command strings from the browser.
-- Never return token values via API.
-- Redact known secret patterns from logs.
-- Validate config file references.
-
-### Tests
-
-- Start/stop/restart tunnel.
-- Runtime missing.
-- Invalid configuration.
-- Tunnel crashes and recovery behavior.
-- Secret values absent from API responses and logs.
-
-### Exit Criteria
-
-Tunnel lifecycle is manageable from Studio with operational visibility and no secret exposure in normal UI/API paths.
-
----
-
-## Milestone 4 — Registry, Configuration & Auto-Discovery
-
-**Target:** `v0.4.0`
-
-### Goal
-
-Make Studio extensible beyond the initial two MCP servers.
-
-### Features
-
-- Persistent MCP registry.
-- Scan `mcp-server/*`.
-- Ignore internal/non-MCP directories such as:
-  - `studio`
-  - `tunnel-client`
-  - build output
-  - hidden directories
-- Runtime/project detection:
-  - Rust via `Cargo.toml`
-  - Node via `package.json`
-  - Python via `pyproject.toml` or supported manifest
-- Detect likely executable/build information.
-- Discovery preview.
-- Manual approval before registration.
-- Config editor.
-- Config validation.
-- Enable/disable MCP entry.
-- Remove registration without deleting source code.
-- Configuration schema versioning.
-
-### Recommended registry concepts
-
-```yaml
-servers:
-  blender:
-    enabled: true
-    path: ../blender
-    runtime: rust
-    transport: stdio
-    command: target/release/rust-mcp-blender
-    args: []
-    restart:
-      policy: on-failure
-      max_attempts: 5
-```
-
-### Security Requirements
-
-- Canonicalize paths.
-- Prevent traversal outside configured MCP root.
-- Do not automatically execute discovered code.
-- Do not permit arbitrary executable selection outside allowed policy.
-
-### Tests
-
-- Detect Blender project.
-- Detect Filesystem project.
-- Ignore Studio itself.
-- Ignore malformed project.
-- Reject traversal paths.
-- Config schema validation.
-- Registry persistence after restart.
-
-### Exit Criteria
-
-A new supported MCP project placed under the configured MCP root can be discovered, reviewed, registered, configured, and managed without source-code changes to Studio.
-
----
-
-## Milestone 5 — Persistence, Metrics & Auditability
+## Milestone 5 — Runtime Distribution, Update Manager & Fleet State
 
 **Target:** `v0.5.0`
 
 ### Goal
 
-Move from transient monitoring to useful operational observability.
+Make Studio capable of safely operating and updating development hosts and source-less runtime hosts from verified release artifacts.
 
-### Persistence
+This milestone is the immediate priority because runtime-only hosts must not require source checkout or local compilation.
 
-Use SQLite for:
+### 5.1 Component Inventory
 
-- Registered MCP servers.
-- Runtime sessions.
-- Process events.
-- Tunnel events.
-- Metrics buckets.
-- Configuration revisions where appropriate.
-- Audit events.
+Studio must expose installed/current/available identity for:
 
-### Process Metrics
+- Filesystem MCP;
+- Git MCP;
+- Exec MCP;
+- Gateway MCP;
+- Blender MCP when managed;
+- Studio itself;
+- Fleet control bundle;
+- official tunnel-client.
 
-- Current state.
-- PID.
-- Current uptime.
-- Total launches.
-- Restart count.
-- Crash count.
-- Last exit code.
-- Last start time.
-- Last stop time.
-- Average session duration.
+Inventory data should include where applicable:
 
-### Initial Usage Metrics
+```text
+component id
+component class: mcp | service | control-bundle | upstream-runtime
+installed version
+installed artifact checksum
+installed architecture
+installed path
+release source
+latest available version
+selected update channel
+update available
+runtime state
+last update result
+last successful update timestamp
+```
 
-Metrics available without an MCP gateway:
+### 5.2 Release Providers
 
-- Process activity.
-- Log/error event counts.
-- Session uptime.
-- Restart/crash behavior.
+Implement provider abstractions for at least:
 
-Request-level MCP metrics should only be reported when they are directly observable rather than guessed.
+#### 13thx GitHub Release Provider
 
-### Audit Events
+Supports project-owned components from `13thx-mcp/*`.
 
-Record actions such as:
+Required behavior:
 
-- Server started.
-- Server stopped.
-- Server restarted.
-- Tunnel started/stopped/restarted.
-- Config changed.
-- MCP registered/unregistered.
-- Discovery approved.
+- query latest/stable or configured version;
+- select correct OS/architecture asset;
+- fetch `SHA256SUMS.txt`;
+- verify downloaded archive;
+- reject missing/ambiguous/checksum-mismatched assets;
+- expose release metadata to Studio without executing artifact contents.
 
-### UI
+#### OpenAI tunnel-client Provider
 
-- Historical charts.
-- Time range selector.
-- Recent event timeline.
-- Error/restart trends.
+Supports official `openai/tunnel-client` runtime releases with the same integrity guarantees plus extracted-binary version validation.
 
-### Tests
+### 5.3 Platform Resolution
 
-- Database migrations.
-- Restart persistence.
-- Event recording accuracy.
-- Metrics retention.
-- Corrupt/locked DB error handling.
+Minimum initial runtime targets:
+
+```text
+darwin-amd64
+darwin-arm64
+```
+
+Platform resolution must normalize common host values safely:
+
+```text
+x86_64 / amd64 → amd64
+arm64 / aarch64 → arm64
+Darwin → darwin
+```
+
+Unsupported OS/architecture must fail closed rather than guessing.
+
+### 5.4 Update State Machine
+
+Updates must use an explicit state machine:
+
+```text
+IDLE
+  ↓ check
+CHECKING
+  ↓ newer version
+AVAILABLE
+  ↓ operator/policy approval
+DOWNLOADING
+  ↓
+VERIFYING
+  ↓
+STAGING
+  ↓
+PREPARING_RUNTIME
+  ↓
+ACTIVATING
+  ↓
+HEALTH_VERIFYING
+  ↓ success
+CURRENT
+```
+
+Failure paths:
+
+```text
+DOWNLOAD_FAILED
+VERIFY_FAILED
+STAGE_FAILED
+STOP_FAILED
+ACTIVATE_FAILED
+HEALTH_FAILED
+ROLLBACK_REQUIRED
+ROLLBACK_FAILED
+```
+
+No failed verification may modify the active executable.
+
+### 5.5 Safe MCP Update Transaction
+
+For a managed MCP:
+
+```text
+check release
+→ download
+→ checksum verify
+→ extract/stage
+→ verify expected executable
+→ stop target MCP if running
+→ atomic binary replacement in flat bin root
+→ start target if previously running
+→ protocol/health verification
+→ persist update result
+```
+
+Only the affected MCP should restart.
+
+A failed post-activation verification must trigger rollback to the last-known-good binary when rollback data exists.
+
+### 5.6 Gateway Update Transaction
+
+Gateway update must account for the fact that changing Gateway can interrupt the control path used by connected clients.
+
+Required design:
+
+- stage/verify before stopping Gateway;
+- preserve generated `runtime/gateway/servers.d`;
+- activate only after artifact verification;
+- restart/reconnect Gateway deterministically;
+- verify child catalog restoration;
+- confirm expected child count/tool catalog or configured health criteria;
+- expose transient reconnect state distinctly from failure.
+
+### 5.7 Studio Self-Update
+
+Studio must not rely on killing and replacing itself from inside the same process without an external supervisor contract.
+
+Required design:
+
+- Studio downloads/verifies/stages its own release;
+- records `restart-required` / pending activation state;
+- an external launcher/service manager performs process replacement;
+- startup finalizes and health-verifies the pending update;
+- failed startup can revert to last-known-good Studio release.
+
+Initial macOS integration should define a `launchd`-compatible service contract.
+
+Studio release activation must preserve:
+
+- `runtime/studio/studio.toml`;
+- registry/database state;
+- logs according to policy;
+- runtime secrets;
+- packaged `web/dist` matching the backend release.
+
+### 5.8 Fleet Control Bundle Update
+
+Fleet update must not overwrite host-local profiles blindly.
+
+Required behavior:
+
+- update versioned fleet tooling/manifest templates;
+- preserve active host-local `hosts/<host>.toml`;
+- support schema-version validation/migration;
+- validate rendered Gateway/Studio/tunnel config before activation.
+
+### 5.9 Tunnel Update
+
+Promote the existing official tunnel update behavior into Studio:
+
+- installed-version display;
+- latest-version display;
+- update available state;
+- OS/arch asset selection;
+- SHA-256 verification;
+- binary version verification;
+- versioned install directories;
+- atomic `current` switch;
+- previous-version rollback;
+- preserve `config.yaml` and credentials;
+- restart only when required/approved.
+
+### 5.10 Fleet State and Drift
+
+Studio must distinguish:
+
+```text
+Desired version
+Installed version
+Running version
+```
+
+These may temporarily differ during update/restart operations.
+
+Drift states should include:
+
+```text
+CURRENT
+UPDATE_AVAILABLE
+INSTALLED_RESTART_REQUIRED
+DRIFTED
+UNKNOWN
+BROKEN
+```
+
+Studio must never claim synchronized fleet state based only on source Git HEAD.
+
+### 5.11 UI
+
+Add an Updates/Fleet page showing:
+
+- host identity;
+- platform/architecture;
+- component current/available versions;
+- release source;
+- checksum/integrity status;
+- source-present versus runtime-only host mode;
+- update state/progress;
+- last result;
+- restart requirement;
+- drift state;
+- manual update action;
+- rollback action where safe.
+
+### 5.12 API
+
+Minimum API direction:
+
+```text
+GET  /api/updates
+GET  /api/updates/{component}
+POST /api/updates/check
+POST /api/updates/{component}/prepare
+POST /api/updates/{component}/apply
+POST /api/updates/{component}/rollback
+
+GET  /api/fleet
+GET  /api/fleet/drift
+```
+
+Exact endpoint naming may change during design review.
+
+### 5.13 Security Requirements
+
+- HTTPS only for remote release retrieval.
+- SHA-256 verification before extraction/activation.
+- safe archive extraction with traversal rejection.
+- no executable activation before integrity and structure validation.
+- no browser-supplied arbitrary release URL/path.
+- release repositories/component IDs must come from server-side policy.
+- downgrade requires explicit policy/operator intent.
+- secrets/config remain outside release archives.
+- runtime update logs must redact tokens/headers.
+- preserve least-privilege filesystem ownership.
+
+### 5.14 Verification
+
+- correct amd64/arm64 selection;
+- no matching artifact;
+- malformed release metadata;
+- checksum mismatch;
+- path traversal in archive;
+- truncated archive;
+- expected executable missing;
+- wrong binary version;
+- MCP stop/update/restart success;
+- update of inactive MCP remains inactive;
+- rollback after failed health verification;
+- Gateway update/reconnect;
+- Studio staged self-update contract;
+- Fleet host-local config preservation;
+- tunnel update preserving local config;
+- complete runtime-only-host smoke with no source tree/toolchain.
 
 ### Exit Criteria
 
-Operational history survives Studio restart and accurately reflects supervised process events.
+A source-less macOS host can be installed, inspected, updated, restarted, and rolled back using only verified published artifacts plus host-local runtime configuration.
 
 ---
 
-## Milestone 6 — Alpha Hardening & Developer Preview
+## Milestone 6 — Persistence, Metrics & Auditability
 
 **Target:** `v0.6.0-alpha`
 
 ### Goal
 
-Stabilize the full local management workflow before broader usage.
+Persist operational history, update history, audit data, and useful metrics across Studio restarts.
 
-### Features
+### Persistence
 
-- Auto-restart policy.
-- Restart backoff.
-- Crash-loop detection.
-- Health-check abstraction.
-- Config backup before mutation.
-- Safe rollback to previous config.
-- Improved structured logs.
-- Diagnostics bundle without secrets.
-- Better startup validation.
-- Better error surfaces in UI.
+Introduce SQLite for:
 
-### Reliability Requirements
+- registered MCP servers or registry metadata migration where appropriate;
+- runtime sessions;
+- process events;
+- tunnel events;
+- update attempts;
+- artifact/install records;
+- active/previous release identity;
+- fleet drift observations;
+- configuration revisions;
+- audit events;
+- metrics buckets.
 
-- Prevent infinite tight restart loops.
-- Supervisor state must converge after process failure.
-- Studio restart must reconcile stale persisted process state.
-- Partial failure of one MCP must not crash Studio.
-- Tunnel failure must not crash the MCP supervisor.
+### Process Metrics
 
-### Verification
+- current state;
+- PID;
+- uptime;
+- total launches;
+- restart count;
+- crash count;
+- last exit code;
+- last start/stop;
+- average session duration.
 
-- Fault injection.
-- Repeated crash/restart test.
-- Studio forced restart test.
-- Invalid config recovery.
-- Long-running local soak test.
+### Update Metrics
+
+- update checks;
+- updates available;
+- attempted installs;
+- successful installs;
+- failed installs;
+- rollback count;
+- update duration;
+- last-known-good version.
+
+### Audit Events
+
+Record at least:
+
+- MCP start/stop/restart;
+- tunnel start/stop/restart;
+- registry change;
+- discovery approval;
+- config change;
+- update check;
+- update prepare/apply;
+- rollback;
+- fleet drift resolution;
+- Studio self-update request/finalization.
+
+### UI
+
+- historical charts;
+- event timeline;
+- update history;
+- error/restart trends;
+- fleet drift history.
 
 ### Exit Criteria
 
-No known Critical/High defects in core lifecycle management, configuration, persistence, or tunnel management.
+Operational and update history survives restart and can explain how the currently running artifacts/configuration were reached.
 
 ---
 
-## Milestone 7 — Beta: MCP Gateway & Accurate Usage Telemetry
+## Milestone 7 — Hardening, Auto-Update Policy & Recovery
 
 **Target:** `v0.7.0-beta`
 
 ### Goal
 
-Introduce an optional gateway layer so Studio can observe real MCP traffic and expose multiple MCP servers through a controlled endpoint.
+Make local unattended operation safe enough for regular runtime-host use.
 
-### Proposed Flow
+### Runtime Reliability
+
+- configurable auto-restart;
+- exponential restart backoff;
+- crash-loop detection/circuit breaker;
+- health-check abstraction;
+- partial component failure isolation;
+- Studio restart reconciliation;
+- tunnel failure isolation.
+
+### Update Policies
+
+Supported initial policies:
+
+```text
+manual
+notify-only
+auto-prepare
+auto-update-safe
+```
+
+`auto-update-safe` must require all safety preconditions:
+
+- trusted configured release provider;
+- newer allowed semantic version;
+- valid checksum;
+- supported platform;
+- no conflicting active update;
+- rollback material available where required;
+- component-specific restart policy permits activation.
+
+Auto-update must never auto-resolve source Git conflicts.
+
+### Update Scheduling
+
+Support:
+
+- manual check;
+- startup check;
+- periodic check;
+- maintenance window;
+- deferred restart where component semantics allow it.
+
+### Recovery
+
+- config backup before mutation;
+- safe config rollback;
+- binary last-known-good rollback;
+- failed activation recovery;
+- stale update-lock recovery;
+- interrupted download/staging cleanup;
+- diagnostics bundle without secrets.
+
+### Verification
+
+- repeated crash/restart tests;
+- interrupted update fault injection;
+- disk-full behavior;
+- corrupted prior release;
+- rollback failure handling;
+- Studio forced restart during update state transitions;
+- long-running runtime-host soak.
+
+### Exit Criteria
+
+A runtime host can operate with safe periodic update checking and optional constrained automatic updates without entering uncontrolled restart/update loops.
+
+---
+
+## Milestone 8 — MCP Gateway & Accurate Usage Telemetry
+
+**Target:** `v0.8.0-beta`
+
+### Goal
+
+Integrate Gateway as an observable first-class runtime component and report real MCP traffic metadata.
+
+### Runtime Flow
 
 ```text
 MCP Client
     │
-    ▼
 Secure Tunnel
     │
     ▼
-MCP Studio Gateway
+rust-mcp-gateway
     │
-    ├── Blender MCP
     ├── Filesystem MCP
-    └── Other registered MCPs
+    ├── Git MCP
+    ├── Exec MCP
+    ├── Blender MCP
+    └── Other configured MCPs
 ```
 
 ### Features
 
-- Gateway routing by MCP identifier.
-- Session tracking.
-- Request count.
-- Success/error count.
-- Requests per minute.
-- Per-tool usage where protocol-safe.
-- Request latency.
-- p50/p95 latency.
-- Active sessions.
-- Gateway health.
-- Optional per-MCP access policy.
+- Gateway lifecycle/state in Studio;
+- child server catalog and health;
+- Gateway reconnect/reload visibility;
+- request count;
+- success/error count;
+- requests per minute;
+- per-tool usage where protocol-safe;
+- request latency;
+- p50/p95 latency;
+- active sessions;
+- optional per-MCP/tool policy visibility.
 
 ### Privacy/Security Requirements
 
-- Do not persist request payloads by default.
-- Do not persist MCP tool arguments by default.
-- Metadata telemetry should be sufficient for normal monitoring.
-- Sensitive payload logging requires explicit opt-in and clear warning.
-
-### Tests
-
-- Request routing.
-- Concurrent sessions.
-- MCP process restart during active usage.
-- Gateway timeout behavior.
-- Backpressure.
-- Large request/response boundaries.
-- Metrics correctness.
+- do not persist request payloads by default;
+- do not persist MCP tool arguments by default;
+- metadata telemetry should satisfy normal observability;
+- sensitive payload logging requires explicit opt-in and clear warnings;
+- Gateway policy and generated `servers.d` remain server-side controlled.
 
 ### Exit Criteria
 
-Studio can report real MCP usage statistics based on traffic it actually observes.
+Studio reports real usage and health based on traffic/metadata Gateway actually observes, not guessed request activity.
 
 ---
 
-## Milestone 8 — Release Candidate: Security, Reliability & Upgrade Safety
+## Milestone 9 — Release Candidate: Security, Upgrade Safety & Operations
 
 **Target:** `v0.9.0-rc`
 
 ### Goal
 
-Prepare for production-grade deployment.
+Prepare the complete control plane for production-grade deployment.
 
 ### Security
 
-- Formal threat-model review.
-- Authentication model for non-localhost deployments.
-- Authorization/RBAC if multi-user access is supported.
-- CSRF protection for browser-authenticated deployments.
-- Strict CORS policy.
-- Secure headers.
-- Secret-at-rest strategy where Studio stores credentials.
-- Rate limiting for privileged APIs.
-- Audit trail integrity review.
-- Dependency vulnerability scan.
-- Supply-chain/build provenance review.
+- formal threat-model review;
+- release supply-chain review;
+- dependency vulnerability scans;
+- artifact checksum enforcement review;
+- provenance/signing strategy decision;
+- authentication for non-localhost deployments;
+- RBAC if multi-user operation is supported;
+- CSRF/CORS/secure-header review;
+- secret-at-rest strategy;
+- privileged API rate limiting;
+- audit trail integrity review.
 
-### Reliability
+### Upgrade Safety
 
-- Graceful Studio shutdown.
-- Child process reconciliation.
-- Crash-loop circuit breaker.
-- Database backup/restore procedure.
-- Database migration rollback strategy.
-- Config rollback.
-- Log rotation.
-- Metrics retention policy.
-- Disk usage protections.
+- supported-version upgrade matrix;
+- rollback matrix;
+- database migration backup/restore;
+- config schema migration/rollback;
+- component dependency compatibility checks;
+- disk-space preflight;
+- release retention policy;
+- old-artifact cleanup policy.
+
+### Operations
+
+- graceful Studio shutdown;
+- child process reconciliation;
+- log rotation;
+- metrics retention;
+- disk usage protections;
+- runtime backup/restore;
+- diagnostics export;
+- launchd installation/service documentation;
+- host bootstrap/update/rollback guides.
 
 ### Performance
 
-- API load test.
-- WebSocket fan-out test.
-- Multi-MCP concurrency test.
-- Long-running soak test.
-- Memory leak observation.
-- Database growth test.
+- API load test;
+- WebSocket fan-out test;
+- multi-MCP concurrency test;
+- Gateway throughput/latency test;
+- long-running soak;
+- memory leak observation;
+- database growth test.
 
 ### Compatibility
 
-- macOS target validated.
-- Linux target validated if production scope includes Linux.
-- Supported browser matrix documented.
+Initial required production matrix:
 
-### Release Engineering
+```text
+macOS / Intel (amd64)
+macOS / Apple Silicon (arm64)
+```
 
-- Reproducible release build.
-- Versioned artifacts.
-- Checksums.
-- Release notes.
-- Upgrade guide.
-- Rollback guide.
+Linux support may be added only with explicit artifacts, CI coverage, and operational testing.
 
 ### Exit Criteria
 
-- Release candidate passes security review.
-- Migration tests pass from supported previous versions.
-- No unresolved Critical/High security finding.
-- No unresolved blocker defect.
-- Soak/load targets pass.
+- RC security review passes;
+- migration/rollback tests pass;
+- runtime-only upgrade tests pass across supported macOS architectures;
+- no unresolved Critical/High security finding;
+- no blocker defect;
+- soak/load targets pass.
 
 ---
 
-## Milestone 9 — Production Grade v1.0
+## Milestone 10 — Production Grade v1.0
 
 **Target:** `v1.0.0`
 
 ### Goal
 
-Provide a stable, supportable MCP control plane suitable for daily operational use.
+Provide a stable, supportable MCP control plane suitable for daily development-host and runtime-host operation.
 
 ### Required Capabilities
 
 #### MCP Lifecycle
 
-- Start.
-- Stop.
-- Restart/reconnect.
-- Health state.
-- Auto-restart.
-- Crash-loop protection.
-- Process ownership safety.
+- start/stop/restart;
+- health state;
+- auto-restart/backoff;
+- crash-loop protection;
+- process ownership safety.
 
 #### Tunnel Lifecycle
 
-- Start.
-- Stop.
-- Restart.
-- State monitoring.
-- Reconnect tracking.
-- Safe secret handling.
+- start/stop/restart;
+- state/reconnect monitoring;
+- official release update/rollback;
+- safe secret handling.
 
 #### Registry & Configuration
 
-- Persistent registry.
-- Auto-discovery.
-- Explicit registration approval.
-- Config validation.
-- Config versioning.
-- Safe rollback.
+- persistent registry;
+- development-host discovery;
+- explicit registration approval;
+- runtime-only installed inventory;
+- config validation/versioning;
+- safe rollback.
+
+#### Runtime Distribution
+
+- verified project-owned release artifacts;
+- verified official tunnel release artifacts;
+- platform selection;
+- installed/running/desired version tracking;
+- manual safe update;
+- optional constrained auto-update policy;
+- component rollback;
+- Studio self-update via external supervisor contract.
+
+#### Fleet State
+
+- host identity;
+- runtime architecture;
+- installed component versions;
+- desired versions;
+- drift state;
+- last update results;
+- diagnostics suitable for comparing Aira/Mirin-style hosts without requiring source checkout.
 
 #### Observability
 
-- Live status.
-- Logs.
-- Historical process metrics.
-- Audit events.
-- Real MCP usage metrics when gateway mode is enabled.
+- live status/logs;
+- historical process/update metrics;
+- audit events;
+- real Gateway traffic metrics when Gateway telemetry is enabled.
 
 #### Security
 
-- Localhost-safe defaults.
-- Strong authentication for remote mode.
-- Authorization where multi-user operation exists.
-- No raw arbitrary command execution from UI.
-- Secret redaction.
-- Path confinement.
-- Auditability.
+- localhost-safe defaults;
+- release integrity verification;
+- strong authentication for remote mode;
+- authorization where multi-user operation exists;
+- no raw arbitrary browser command execution;
+- secret redaction;
+- path confinement;
+- archive traversal protection;
+- auditability.
 
 #### Operations
 
-- Backup/restore documentation.
-- Upgrade/migration documentation.
-- Log/metric retention controls.
-- Health/readiness endpoints.
-- Diagnostics export.
-- Defined support matrix.
+- backup/restore;
+- upgrade/rollback documentation;
+- log/metric retention;
+- health/readiness endpoints;
+- diagnostics export;
+- defined support matrix;
+- runtime-only bootstrap procedure.
 
 ### Production SLO Targets
 
 Initial targets to validate during RC testing:
 
-- Studio control-plane availability: `>= 99.9%` when host is healthy.
-- No loss of registry/config data during clean restart.
-- Recovery from managed MCP crash according to configured restart policy.
-- Control API p95 latency below an agreed local-network threshold under expected load.
-- No known Critical/High severity vulnerability at release.
-
-Exact numeric performance targets should be finalized after baseline measurements rather than guessed before implementation.
+- Studio control-plane availability `>= 99.9%` when host is healthy;
+- no registry/config loss during clean restart;
+- MCP crash recovery according to policy;
+- no activation of artifacts failing integrity checks;
+- failed component update recovers to known-good state when rollback is supported;
+- control API p95 below an agreed local threshold under expected load;
+- no known Critical/High severity vulnerability at release.
 
 ### Production Release Gate
 
-Production release is approved only if:
-
-- Functional acceptance tests pass.
-- Security review passes.
-- Migration/rollback tests pass.
-- Backup/restore test passes.
-- Soak test passes.
-- Operational documentation is complete.
-- Known limitations are documented.
-- Release artifact can be recreated from source.
+- functional acceptance tests pass;
+- security review passes;
+- migration/rollback tests pass;
+- runtime-only update test passes;
+- backup/restore test passes;
+- soak test passes;
+- operational documentation complete;
+- known limitations documented;
+- release artifacts reproducible from source.
 
 ---
 
-# 7. Post-v1.0 Roadmap
+# 9. Post-v1.0 Roadmap
 
-Potential milestones after production readiness:
+## v1.1 — Plugin / Runtime Adapter System
 
-## v1.1 — Plugin/Adapter System
+- custom runtime adapters;
+- MCP templates;
+- custom health checks;
+- event hooks;
+- alternate artifact providers subject to explicit trust policy.
 
-- Custom runtime adapters.
-- MCP templates.
-- Custom health checks.
-- Event hooks.
+## v1.2 — Multi-host Agents & Central Fleet View
 
-## v1.2 — Multi-host Agents
+Local per-host Studio remains authoritative for privileged local process/update actions.
 
-- Remote Studio agents.
-- Central control plane.
-- Host inventory.
-- Mutual authentication.
+Potential central features:
+
+- authenticated remote Studio agents;
+- host inventory;
+- consolidated drift/update status;
+- rollout groups;
+- staged/canary rollout;
+- remote update approval;
+- mutual authentication;
+- host health aggregation.
+
+Central control must not require a shared writable filesystem and must avoid split-brain update ownership.
 
 ## v1.3 — Advanced Policy
 
-- Per-MCP permissions.
-- Per-tool allow/deny rules.
-- Session policies.
-- Resource quotas.
+- per-MCP permissions;
+- per-tool allow/deny rules;
+- release channels;
+- component version constraints;
+- maintenance-window policy;
+- session policies;
+- resource quotas.
 
 ## v1.4 — Advanced Observability
 
-- OpenTelemetry export.
-- Prometheus metrics endpoint.
-- External log sink integration.
-- Distributed tracing for gateway traffic.
+- OpenTelemetry export;
+- Prometheus metrics;
+- external log sinks;
+- distributed tracing for Gateway traffic;
+- cross-host fleet update/health dashboards.
 
 ---
 
-# 8. Testing Strategy by Layer
+# 10. Testing Strategy by Layer
 
 | Layer | Purpose |
 |---|---|
-| Unit | Validate state machines, parsing, validation, redaction and business logic |
-| Integration | Validate supervisor, DB, registry, discovery, tunnel and OS process behavior |
-| API | Validate HTTP/WebSocket contract and error behavior |
-| UI | Validate main operational workflows |
-| Security | Validate traversal, secret handling, command restrictions and auth boundaries |
-| Failure Injection | Validate crash/restart/recovery behavior |
-| Migration | Validate upgrades and rollbacks |
-| Load | Validate API/gateway concurrency and resource usage |
-| Soak | Detect leaks, stale state and long-running degradation |
+| Unit | State machines, parsing, validation, version/platform normalization, checksum logic, redaction |
+| Integration | Supervisor, registry, update manager, tunnel, filesystem activation, persistence |
+| API | HTTP/WebSocket contract, update operations, conflicts and errors |
+| UI | Lifecycle, update, rollback, fleet/drift workflows |
+| Release | Artifact naming, architecture matrix, checksum manifests, package contents |
+| Security | Traversal, archive extraction, secret handling, command restrictions, release-source policy |
+| Failure Injection | Crash/restart, interrupted update, failed activation, rollback |
+| Migration | Config/DB/runtime layout upgrades and rollback |
+| Runtime-only | Full operation/update without source tree or build toolchain |
+| Load | API/Gateway concurrency and resource use |
+| Soak | Leaks, stale state, repeated update checks/restarts, long-running degradation |
 
 ---
 
-# 9. Security Threat Areas to Track from Day One
+# 11. Security Threat Areas
 
 The threat model must explicitly track at least:
 
-1. Arbitrary process execution.
-2. Command/argument injection.
-3. Path traversal.
-4. Symlink escape where relevant.
-5. Secret leakage through API/logs/UI.
-6. Unauthorized remote control of MCP processes.
-7. Tunnel accidental public exposure.
-8. Malicious auto-discovered MCP project.
-9. Crash-loop resource exhaustion.
-10. Log/disk exhaustion.
-11. Database tampering/corruption.
-12. Dependency/supply-chain compromise.
-13. Cross-site request attacks when remote web access is enabled.
-14. Privilege escalation through managed MCP configuration.
+1. arbitrary process execution;
+2. command/argument injection;
+3. path traversal;
+4. symlink escape;
+5. malicious archive traversal;
+6. release artifact tampering;
+7. malicious/incorrect release metadata;
+8. wrong architecture artifact activation;
+9. downgrade/replay attacks within supported release semantics;
+10. secret leakage through API/logs/UI/update tooling;
+11. unauthorized process/update control;
+12. tunnel accidental public exposure;
+13. malicious auto-discovered project manifests;
+14. crash-loop resource exhaustion;
+15. update/restart loop exhaustion;
+16. disk exhaustion through releases/logs/metrics;
+17. database tampering/corruption;
+18. dependency/supply-chain compromise;
+19. CSRF/cross-origin attacks in browser control paths;
+20. privilege escalation through MCP/update configuration;
+21. compromised external launcher/self-update path;
+22. central multi-host split-brain or credential compromise when that capability is introduced.
 
 ---
 
-# 10. Configuration Principles
+# 12. Configuration Principles
 
-- Config must have an explicit schema version.
-- Unknown critical fields should fail safely.
-- Secrets should be referenced, not embedded where possible.
-- Web UI must never receive stored secret values after initial submission unless explicitly required by a secure design.
-- Config changes should be validated before activation.
-- Production-grade config changes should support rollback.
-
-Example secret reference:
-
-```yaml
-env:
-  API_KEY:
-    from_env: MCP_API_KEY
-```
+- config has explicit schema version where persisted/shared;
+- unknown critical fields fail safely;
+- secrets are referenced, not embedded where possible;
+- browser never receives stored secret values unless explicitly required by a reviewed design;
+- config changes validate before activation;
+- generated runtime config remains outside source repositories;
+- production config changes support rollback;
+- host-local config is preserved across component/fleet updates;
+- source root, flat MCP bin root, and non-MCP runtime root remain distinct concepts.
 
 ---
 
-# 11. Logging Principles
+# 13. Logging Principles
 
-Logs should be structured and include where applicable:
+Logs should include where applicable:
 
-- timestamp
-- component
-- mcp_id
-- process_id
-- event_type
-- severity
-- request/session identifier when safe
+- timestamp;
+- host id;
+- component;
+- component version;
+- MCP id;
+- process id;
+- event type;
+- severity;
+- update transaction id;
+- request/session id when safe.
 
 Logs must not contain:
 
-- API tokens
-- tunnel credentials
-- authorization headers
-- private environment values
-- full MCP payloads by default
+- API tokens;
+- tunnel credentials;
+- authorization headers;
+- private environment values;
+- full MCP payloads by default;
+- secret-bearing release request headers.
 
 ---
 
-# 12. Database Migration Policy
+# 14. Database Migration Policy
 
-Starting when SQLite is introduced:
+When SQLite is introduced:
 
-- Every schema change has a numbered migration.
-- Migration is tested from the previous supported release.
-- Backups are created before destructive migrations where practical.
-- Failed migration must not silently continue.
-- Production releases document whether downgrade is supported.
+- every schema change has a numbered migration;
+- migration tested from each supported previous release;
+- backups created before destructive migrations where practical;
+- failed migration cannot silently continue;
+- Studio records schema and application version compatibility;
+- production releases document downgrade support explicitly;
+- update activation cannot irreversibly migrate state before rollback policy is satisfied.
 
 ---
 
-# 13. Release Versioning
+# 15. Release Versioning
 
-Recommended progression:
+Current/target progression:
 
 ```text
-v0.0.x        Foundation
-v0.1.0        Core Supervisor MVP
-v0.2.0        Web Dashboard MVP
-v0.3.0        Tunnel Management
-v0.4.0        Registry + Discovery
-v0.5.0        Persistence + Metrics
-v0.6.0-alpha  Hardening / Developer Preview
-v0.7.0-beta   Gateway + Real Usage Telemetry
-v0.9.0-rc     Production Release Candidate
+v0.0.x        Foundation                           COMPLETE
+v0.1.0        Core Supervisor MVP                  COMPLETE
+v0.2.0        Web Dashboard MVP                    COMPLETE
+v0.3.0        Tunnel Management                    COMPLETE
+v0.4.0        Registry + Discovery                 COMPLETE
+v0.5.0        Runtime Distribution + Update Mgr    NEXT
+v0.6.0-alpha  Persistence + Metrics + Audit
+v0.7.0-beta   Hardening + Auto-Update + Recovery
+v0.8.0-beta   Gateway + Real Usage Telemetry
+v0.9.0-rc     Security + Upgrade Safety + RC
 v1.0.0        Production Grade
 ```
 
-Semantic Versioning should be used from the first public/pre-release artifact.
+Semantic Versioning is required for Studio and all `13thx-mcp` component releases.
 
 ---
 
-# 14. Current Immediate Next Step
+# 16. Current Immediate Next Step
 
-The next implementation work should be **Milestone 0 only**.
-
-Do not jump directly into the dashboard or gateway.
+The next implementation milestone is **M5 — Runtime Distribution, Update Manager & Fleet State**.
 
 Recommended execution order:
 
 ```text
-1. Bootstrap Rust Studio project
-2. Add docs/architecture.md
-3. Add docs/threat-model.md
-4. Add ADR template
-5. Establish config model
-6. Establish error/logging conventions
-7. Establish test structure
-8. Add CI baseline
-9. Review Milestone 0 exit criteria
-10. Begin Milestone 1 only after Milestone 0 passes
+M5.1  Define release-provider and installed-component data models
+M5.2  Implement 13thx GitHub Release provider
+M5.3  Integrate official tunnel-client release provider
+M5.4  Add platform/architecture resolver
+M5.5  Add download/checksum/safe-extraction staging layer
+M5.6  Add installed/available/drift inventory API
+M5.7  Implement MCP binary transactional update + rollback
+M5.8  Implement Gateway update/reconnect transaction
+M5.9  Implement Fleet bundle update preserving host profile
+M5.10 Define Studio external-supervisor self-update protocol
+M5.11 Add Updates/Fleet UI
+M5.12 Prove complete source-less runtime-host bootstrap/update smoke
 ```
 
-This keeps the project aligned with SDLC from the beginning and avoids accumulating operational/security debt before the privileged process-management code is introduced.
+Do not begin unattended auto-update until M5 manual update transactions and rollback are proven. Auto-update policy belongs to M7 hardening after persisted update history and recovery semantics exist.
