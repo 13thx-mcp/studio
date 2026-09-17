@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::BTreeMap,
     fs::{self, File, OpenOptions},
     io::Write,
     path::{Component, Path, PathBuf},
@@ -182,16 +182,6 @@ impl Registry {
         if candidate.servers.contains_key(&id) {
             return Err(StudioError::Duplicate(id));
         }
-        if candidate
-            .servers
-            .values()
-            .any(|existing| existing.project_path == server.project_path)
-        {
-            return Err(StudioError::Duplicate(format!(
-                "project {} is already registered",
-                server.project_path.display()
-            )));
-        }
         validate_server(&server, &self.canonical_root, false)?;
         candidate.servers.insert(id.clone(), server.clone());
         self.persist_and_replace(candidate)?;
@@ -285,16 +275,9 @@ fn validate_document(document: &RegistryDocument, canonical_root: &Path) -> Stud
             document.schema_version, REGISTRY_SCHEMA_VERSION
         )));
     }
-    let mut projects = HashSet::new();
     for (id, server) in &document.servers {
         validate_id(id)?;
         validate_server(server, canonical_root, false)?;
-        if !projects.insert(server.project_path.clone()) {
-            return Err(StudioError::Duplicate(format!(
-                "project {} appears more than once",
-                server.project_path.display()
-            )));
-        }
     }
     Ok(())
 }
@@ -618,6 +601,23 @@ mod tests {
         persist_document(&path, &document).unwrap();
         let second = fs::read_to_string(&path).unwrap();
         assert_eq!(first, second);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn allows_multiple_servers_in_same_runtime_directory() {
+        let root = temp_root("shared-runtime");
+        let project = root.join("fixture");
+        fs::create_dir_all(&project).unwrap();
+        let document = RegistryDocument {
+            schema_version: REGISTRY_SCHEMA_VERSION,
+            mcp_root: PathBuf::from("."),
+            servers: BTreeMap::from([
+                ("one".into(), server("fixture")),
+                ("two".into(), server("fixture")),
+            ]),
+        };
+        validate_document(&document, &fs::canonicalize(&root).unwrap()).unwrap();
         let _ = fs::remove_dir_all(root);
     }
 
