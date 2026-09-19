@@ -7,6 +7,10 @@ import type {
   RegistryUpdate,
   TunnelLogEntry,
   TunnelStatus,
+  UpdateComponent,
+  UpdateInventory,
+  UpdateTransaction,
+  ReconciliationView,
 } from "./types";
 
 async function readJson<T>(response: Response): Promise<T> {
@@ -95,4 +99,56 @@ export function tunnelLifecycleAction(
   action: "start" | "stop" | "restart",
 ): Promise<TunnelStatus> {
   return fetch(`/api/tunnel/${action}`, { method: "POST" }).then(readJson<TunnelStatus>);
+}
+
+export function listUpdates(): Promise<UpdateInventory[]> {
+  return fetch("/api/updates").then(readJson<UpdateInventory[]>);
+}
+
+export function checkUpdates(): Promise<UpdateInventory[]> {
+  return fetch("/api/updates/check", { method: "POST" }).then(readJson<UpdateInventory[]>);
+}
+
+export function prepareUpdate(
+  component: UpdateComponent,
+  version: string,
+): Promise<UpdateTransaction> {
+  return fetch(`/api/updates/${encodeURIComponent(component)}/prepare`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ version }),
+  }).then(readJson<UpdateTransaction>);
+}
+
+export function applyUpdate(
+  component: UpdateComponent,
+  transactionId: string,
+): Promise<UpdateTransaction> {
+  return fetch(`/api/updates/${encodeURIComponent(component)}/apply`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ transaction_id: transactionId }),
+  }).then(readJson<UpdateTransaction>);
+}
+
+export function getUpdateTransaction(transactionId: string): Promise<UpdateTransaction> {
+  return fetch(`/api/update-transactions/${encodeURIComponent(transactionId)}`).then(
+    readJson<UpdateTransaction>,
+  );
+}
+
+export function getReconciliation(): Promise<ReconciliationView> {
+  return fetch("/api/reconciliation").then(readJson<ReconciliationView>);
+}
+
+export function checkReconciliation(): Promise<ReconciliationView> {
+  return fetch("/api/reconciliation/check", { method: "POST" }).then(
+    readJson<ReconciliationView>,
+  );
+}
+
+export function applyReconciliation(): Promise<ReconciliationView> {
+  return fetch("/api/reconciliation/apply", { method: "POST" }).then(
+    readJson<ReconciliationView>,
+  );
 }

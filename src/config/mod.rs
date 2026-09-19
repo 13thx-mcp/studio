@@ -6,11 +6,27 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::{
     error::{StudioError, StudioResult},
     tunnel::TunnelConfig,
 };
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadedConfigIdentity {
+    pub canonical_path: Option<PathBuf>,
+    pub sha256: Option<String>,
+}
+
+impl LoadedConfigIdentity {
+    pub fn builtin() -> Self {
+        Self {
+            canonical_path: None,
+            sha256: None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StudioConfig {
@@ -26,6 +42,8 @@ pub struct StudioConfig {
     pub mcp: BTreeMap<String, McpServerConfig>,
     #[serde(default)]
     pub tunnel: TunnelConfig,
+    #[serde(default)]
+    pub updates: UpdatesConfig,
 }
 
 impl Default for StudioConfig {
@@ -37,6 +55,7 @@ impl Default for StudioConfig {
             registry: RegistryConfig::default(),
             mcp: default_mcp_registry(),
             tunnel: TunnelConfig::default(),
+            updates: UpdatesConfig::default(),
         }
     }
 }
@@ -73,6 +92,61 @@ impl Default for RegistryConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdatesConfig {
+    #[serde(default = "default_source_root")]
+    pub source_root: PathBuf,
+    #[serde(default = "default_bin_root")]
+    pub bin_root: PathBuf,
+    #[serde(default = "default_runtime_root")]
+    pub runtime_root: PathBuf,
+    #[serde(default)]
+    pub desired: BTreeMap<String, String>,
+}
+
+impl Default for UpdatesConfig {
+    fn default() -> Self {
+        Self {
+            source_root: default_source_root(),
+            bin_root: default_bin_root(),
+            runtime_root: default_runtime_root(),
+            desired: BTreeMap::new(),
+        }
+    }
+}
+
+impl UpdatesConfig {
+    pub fn resolve_roots(&self, base_dir: &Path) -> (PathBuf, PathBuf, PathBuf) {
+        if self.source_root == default_source_root()
+            && self.bin_root == default_bin_root()
+            && self.runtime_root == default_runtime_root()
+        {
+            for candidate in base_dir.ancestors().take(4) {
+                if candidate.join("bin").is_dir() && candidate.join("runtime").is_dir() {
+                    return (
+                        candidate.to_owned(),
+                        candidate.join("bin"),
+                        candidate.join("runtime"),
+                    );
+                }
+            }
+        }
+        (
+            resolve_relative(base_dir, &self.source_root),
+            resolve_relative(base_dir, &self.bin_root),
+            resolve_relative(base_dir, &self.runtime_root),
+        )
+    }
+}
+
+fn resolve_relative(base_dir: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_owned()
+    } else {
+        base_dir.join(path)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServerConfig {
     pub name: String,
     pub command: PathBuf,
@@ -97,6 +171,15 @@ fn default_registry_path() -> PathBuf {
 }
 fn default_mcp_root() -> PathBuf {
     PathBuf::from("..")
+}
+fn default_source_root() -> PathBuf {
+    PathBuf::from("..")
+}
+fn default_bin_root() -> PathBuf {
+    PathBuf::from("../bin")
+}
+fn default_runtime_root() -> PathBuf {
+    PathBuf::from("../runtime")
 }
 
 fn default_mcp_registry() -> BTreeMap<String, McpServerConfig> {
@@ -126,8 +209,26 @@ fn default_mcp_registry() -> BTreeMap<String, McpServerConfig> {
 
 impl StudioConfig {
     pub fn load(path: &Path) -> StudioResult<Self> {
-        let text = fs::read_to_string(path)?;
-        Ok(toml::from_str(&text)?)
+        Ok(Self::load_with_identity(path)?.0)
+    }
+
+    pub fn load_with_identity(path: &Path) -> StudioResult<(Self, LoadedConfigIdentity)> {
+        let bytes = fs::read(path)?;
+        let canonical_path = fs::canonicalize(path)?;
+        let text = std::str::from_utf8(&bytes)
+            .map_err(|_| StudioError::Config("Studio config is not valid UTF-8".into()))?;
+        let config = toml::from_str(text)?;
+        let sha256 = Sha256::digest(&bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        Ok((
+            config,
+            LoadedConfigIdentity {
+                canonical_path: Some(canonical_path),
+                sha256: Some(sha256),
+            },
+        ))
     }
 
     pub fn validate(&self) -> StudioResult<()> {
@@ -188,6 +289,19 @@ impl StudioConfig {
                 "tunnel runtime, working_dir, and config_file must not be empty".into(),
             ));
         }
+        if self.updates.source_root.as_os_str().is_empty()
+            || self.updates.bin_root.as_os_str().is_empty()
+            || self.updates.runtime_root.as_os_str().is_empty()
+        {
+            return Err(StudioError::Config(
+                "updates source_root, bin_root, and runtime_root must not be empty".into(),
+            ));
+        }
+        for (component, version) in &self.updates.desired {
+            component.parse::<crate::update::ComponentId>()?;
+            crate::update::Version::parse(version)?;
+        }
+
         for (key, reference) in &self.tunnel.env {
             if key.trim().is_empty() {
                 return Err(StudioError::Config(
@@ -225,6 +339,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn load_with_identity_hashes_exact_parsed_bytes_and_canonical_path() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("studio.toml");
+        let bytes = b"[server]\nlisten_addr = \"127.0.0.1:18100\"\n";
+        fs::write(&path, bytes).unwrap();
+        let (config, identity) = StudioConfig::load_with_identity(&path).unwrap();
+        assert_eq!(config.server.listen_addr, "127.0.0.1:18100");
+        assert_eq!(
+            identity.canonical_path,
+            Some(fs::canonicalize(&path).unwrap())
+        );
+        let expected = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(identity.sha256.as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
     fn default_config_is_valid() {
         StudioConfig::default().validate().unwrap();
     }
@@ -245,5 +378,38 @@ mod tests {
         let mut config = StudioConfig::default();
         config.registry.path = PathBuf::new();
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validates_update_roots_and_desired_versions() {
+        let mut config = StudioConfig::default();
+        config.updates.runtime_root = PathBuf::new();
+        assert!(config.validate().is_err());
+
+        let mut config = StudioConfig::default();
+        config
+            .updates
+            .desired
+            .insert("git".into(), "not-a-version".into());
+        assert!(config.validate().is_err());
+
+        let mut config = StudioConfig::default();
+        config
+            .updates
+            .desired
+            .insert("unknown".into(), "1.0.0".into());
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn default_update_roots_find_conventional_runtime_ancestor() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("bin")).unwrap();
+        fs::create_dir_all(root.path().join("runtime/studio")).unwrap();
+        let base = root.path().join("runtime/studio");
+        let (source, bin, runtime) = UpdatesConfig::default().resolve_roots(&base);
+        assert_eq!(source, root.path());
+        assert_eq!(bin, root.path().join("bin"));
+        assert_eq!(runtime, root.path().join("runtime"));
     }
 }

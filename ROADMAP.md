@@ -427,6 +427,8 @@ See Section 2 and milestone status documents for closure evidence.
 
 **Target:** `v0.5.0`
 
+**Implementation status (2026-09-19):** M5.1–M5.12 implemented and local/source-less fault verification passed. Release publication is blocked until the required public `13thx-mcp/*` project releases/checksum assets are available and clean published-artifact bootstrap/update proof can run.
+
 ### Goal
 
 Make Studio capable of safely operating and updating development hosts and source-less runtime hosts from verified release artifacts.
@@ -629,7 +631,36 @@ Promote the existing official tunnel update behavior into Studio:
 - preserve `config.yaml` and credentials;
 - restart only when required/approved.
 
-### 5.10 Fleet State and Drift
+### 5.10 Runtime Configuration Reconciliation & Catalog Repair
+
+Generated runtime configuration is a first-class desired-state surface, not incidental host state.
+
+Studio must compare Fleet desired render with the active runtime and live Gateway catalog for at least:
+
+- `runtime/gateway/servers.d/*.yaml`;
+- `runtime/tunnel-client/config.yaml`;
+- Fleet-generated Studio runtime config;
+- Gateway child/tool catalog identity.
+
+Required behavior:
+
+- detect stale source-tree, `target/release`, nested-bin, or otherwise non-canonical runtime paths;
+- detect split launch paths where a helper/CLI override masks stale canonical config;
+- distinguish safe Fleet-managed drift from unknown/unmanaged local edits;
+- plan repair before mutation and snapshot rollback bytes/hashes;
+- rewrite only config proven to be Fleet-owned and safe to reconcile;
+- reload Gateway only when Gateway config changed;
+- restart tunnel only when its binding/config changed and preserve prior running/stopped state;
+- verify the exact expected child/tool-name set after reload/reconnect, not only an aggregate tool count;
+- expose a stable catalog fingerprint/generation for diagnostics;
+- keep local Gateway synchronization distinct from connected-client catalog freshness when the remote client provides no refresh acknowledgement;
+- roll back generated config and runtime ownership state if post-repair verification fails.
+
+M5.9A defines the transaction and startup drift detection. It requires a Fleet-authored side-effect-free pure-render contract, a persisted last-known-managed fingerprint/generation to distinguish managed-safe drift from unmanaged edits, and explicit validate-only handling for launcher surfaces that Fleet does not own. Periodic unattended reconciliation, retry/backoff and drift-loop circuit breaking belong to M7.
+
+> Implementation note: this roadmap subsection is implemented by the `M5.9A` submission in the M5 session index; roadmap subsection numbering and submission numbering are not 1:1.
+
+### 5.11 Fleet State and Drift
 
 Studio must distinguish:
 
@@ -654,7 +685,7 @@ BROKEN
 
 Studio must never claim synchronized fleet state based only on source Git HEAD.
 
-### 5.11 UI
+### 5.12 UI
 
 Add an Updates/Fleet page showing:
 
@@ -671,7 +702,7 @@ Add an Updates/Fleet page showing:
 - manual update action;
 - rollback action where safe.
 
-### 5.12 API
+### 5.13 API
 
 Minimum API direction:
 
@@ -689,7 +720,7 @@ GET  /api/fleet/drift
 
 Exact endpoint naming may change during design review.
 
-### 5.13 Security Requirements
+### 5.14 Security Requirements
 
 - HTTPS only for remote release retrieval.
 - SHA-256 verification before extraction/activation.
@@ -702,7 +733,7 @@ Exact endpoint naming may change during design review.
 - runtime update logs must redact tokens/headers.
 - preserve least-privilege filesystem ownership.
 
-### 5.14 Verification
+### 5.15 Verification
 
 - correct amd64/arm64 selection;
 - no matching artifact;
@@ -719,11 +750,15 @@ Exact endpoint naming may change during design review.
 - Studio staged self-update contract;
 - Fleet host-local config preservation;
 - tunnel update preserving local config;
+- stale Fleet-generated Gateway/tunnel config detection and transactional repair;
+- split launch-path detection where a correct override masks stale canonical config;
+- exact Gateway child/tool-set restoration and catalog fingerprint verification;
+- rollback after failed config reconciliation;
 - complete runtime-only-host smoke with no source tree/toolchain.
 
 ### Exit Criteria
 
-A source-less macOS host can be installed, inspected, updated, restarted, and rolled back using only verified published artifacts plus host-local runtime configuration.
+A source-less macOS host can be installed, inspected, updated, reconciled, restarted, and rolled back using only verified published artifacts plus host-local runtime configuration. Fleet-managed generated runtime drift can be detected without source checkouts and safely repaired when ownership is proven.
 
 ---
 
@@ -819,6 +854,9 @@ Make local unattended operation safe enough for regular runtime-host use.
 - health-check abstraction;
 - partial component failure isolation;
 - Studio restart reconciliation;
+- startup and periodic Fleet-managed runtime-config reconciliation;
+- bounded reconcile retry/backoff and drift-loop circuit breaker;
+- unmanaged/local config conflicts never auto-overwritten;
 - tunnel failure isolation.
 
 ### Update Policies
@@ -844,15 +882,19 @@ auto-update-safe
 
 Auto-update must never auto-resolve source Git conflicts.
 
-### Update Scheduling
+### Update / Reconciliation Scheduling
 
 Support:
 
-- manual check;
-- startup check;
-- periodic check;
+- manual update check;
+- startup update check;
+- periodic update check;
+- startup runtime-drift check;
+- periodic runtime-drift check;
 - maintenance window;
 - deferred restart where component semantics allow it.
+
+Safe automatic reconciliation may use the M5.9A primitive only for a proven managed-safe drift class. Unknown edits, secret-bearing ambiguity, repeated failed repair, or rollback uncertainty must stop automatic mutation and require operator action.
 
 ### Recovery
 
@@ -910,6 +952,9 @@ rust-mcp-gateway
 - Gateway lifecycle/state in Studio;
 - child server catalog and health;
 - Gateway reconnect/reload visibility;
+- exact exposed tool-name set fingerprint / catalog generation;
+- `tools/list_changed` emission and refresh-pending visibility;
+- connected-client catalog acknowledgement/refresh telemetry when the protocol exposes it;
 - request count;
 - success/error count;
 - requests per minute;
@@ -1278,7 +1323,7 @@ v0.1.0        Core Supervisor MVP                  COMPLETE
 v0.2.0        Web Dashboard MVP                    COMPLETE
 v0.3.0        Tunnel Management                    COMPLETE
 v0.4.0        Registry + Discovery                 COMPLETE
-v0.5.0        Runtime Distribution + Update Mgr    NEXT
+v0.5.0        Runtime Distribution + Update Mgr    IMPLEMENTED / RELEASE BLOCKED
 v0.6.0-alpha  Persistence + Metrics + Audit
 v0.7.0-beta   Hardening + Auto-Update + Recovery
 v0.8.0-beta   Gateway + Real Usage Telemetry
@@ -1292,23 +1337,17 @@ Semantic Versioning is required for Studio and all `13thx-mcp` component release
 
 # 16. Current Immediate Next Step
 
-The next implementation milestone is **M5 — Runtime Distribution, Update Manager & Fleet State**.
+M5 implementation is complete, but **`v0.5.0` release closure is blocked by unavailable public project-owned release artifacts**.
 
-Recommended execution order:
+Required release-unblock sequence:
 
 ```text
-M5.1  Define release-provider and installed-component data models
-M5.2  Implement 13thx GitHub Release provider
-M5.3  Integrate official tunnel-client release provider
-M5.4  Add platform/architecture resolver
-M5.5  Add download/checksum/safe-extraction staging layer
-M5.6  Add installed/available/drift inventory API
-M5.7  Implement MCP binary transactional update + rollback
-M5.8  Implement Gateway update/reconnect transaction
-M5.9  Implement Fleet bundle update preserving host profile
-M5.10 Define Studio external-supervisor self-update protocol
-M5.11 Add Updates/Fleet UI
-M5.12 Prove complete source-less runtime-host bootstrap/update smoke
+1. Publish/restore stable 13thx-mcp project releases + SHA256SUMS.txt.
+2. Bootstrap a fresh source-less runtime only from those published artifacts plus official OpenAI Tunnel assets.
+3. Exercise a genuine published project version transition and rollback.
+4. Re-run the complete M5 backend/UI/Fleet/security/release gates.
+5. Bump Studio/web to v0.5.0 and prepare the release commit only after those proofs pass.
+6. Reconcile the M5 integration branch with current main, merge once with --no-ff, publish, delete the integration branch, then tag v0.5.0.
 ```
 
-Do not begin unattended auto-update until M5 manual update transactions and rollback are proven. Auto-update policy belongs to M7 hardening after persisted update history and recovery semantics exist.
+M6 implementation should not be treated as the released-baseline successor until this M5 publication gate is cleared. Do not enable unattended auto-update or periodic unattended reconciliation; those policies remain M7 scope.

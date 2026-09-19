@@ -16,6 +16,18 @@ runtime = "../tunnel-client/tunnel-client-runtime-cloudflared"
 working_dir = "../tunnel-client"
 config_file = "../tunnel-client/config.yaml"
 
+# Trusted runtime-distribution roots. Versions are read from deployed runtime
+# artifacts, never inferred from source manifests/Git HEAD. Desired versions are
+# optional manual pins; without a pin M5 preserves the currently installed version.
+[updates]
+source_root = ".."
+bin_root = "../bin"
+runtime_root = "../runtime"
+
+# [updates.desired]
+# git = "0.1.0"
+# tunnel = "0.0.14"
+
 # Optional server-side secret references. Values are resolved only by Studio
 # and are never returned through the API/WebSocket/dashboard.
 # [tunnel.env]

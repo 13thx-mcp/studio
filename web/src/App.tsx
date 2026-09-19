@@ -4,10 +4,18 @@ import {
   getLogs,
   getTunnel,
   getTunnelLogs,
+  getReconciliation,
+  getUpdateTransaction,
   lifecycleAction,
   listDiscovery,
   listRegistry,
   listServers,
+  listUpdates,
+  checkUpdates,
+  prepareUpdate,
+  applyUpdate,
+  checkReconciliation,
+  applyReconciliation,
   registerDiscovery,
   scanDiscovery,
   setRegistryEnabled,
@@ -17,6 +25,8 @@ import {
 } from "./api";
 import { connectRealtime, type ConnectionState } from "./realtime";
 import { actionEnabled, formatLogMessage, formatUptime, mergeLogEntries } from "./state";
+import UpdatesPanel from "./UpdatesPanel";
+import { persistPendingTransaction, readPendingTransactions } from "./updates-state";
 import type {
   DiscoveredProject,
   LogEntry,
@@ -26,6 +36,10 @@ import type {
   StudioEvent,
   TunnelLogEntry,
   TunnelStatus,
+  UpdateComponent,
+  UpdateInventory,
+  UpdateTransaction,
+  ReconciliationView,
 } from "./types";
 import "./styles.css";
 
@@ -39,6 +53,9 @@ export default function App() {
   const [discovery, setDiscovery] = useState<DiscoveredProject[]>([]);
   const [tunnel, setTunnel] = useState<TunnelStatus | null>(null);
   const [tunnelLogs, setTunnelLogs] = useState<TunnelLogEntry[]>([]);
+  const [updates, setUpdates] = useState<UpdateInventory[]>([]);
+  const [reconciliation, setReconciliation] = useState<ReconciliationView | null>(null);
+  const [updateTransactions, setUpdateTransactions] = useState<Partial<Record<UpdateComponent, UpdateTransaction>>>({});
   const [connection, setConnection] = useState<ConnectionState>("connecting");
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -62,10 +79,22 @@ export default function App() {
 
   const refreshRegistry = async () => setRegistry(await listRegistry());
   const refreshDiscovery = async () => setDiscovery(await listDiscovery());
+  const refreshUpdates = async () => setUpdates(await listUpdates());
+  const refreshReconciliation = async () => setReconciliation(await getReconciliation());
+
+  const rememberTransaction = (transaction: UpdateTransaction) => {
+    setUpdateTransactions((current) => ({ ...current, [transaction.component]: transaction }));
+    persistPendingTransaction(window.localStorage, transaction);
+  };
+
+  const refreshUpdateTransaction = async (transactionId: string) => {
+    const transaction = await getUpdateTransaction(transactionId);
+    rememberTransaction(transaction);
+  };
 
   const refreshAll = async () => {
     try {
-      await Promise.all([refreshRuntime(), refreshRegistry(), refreshDiscovery()]);
+      await Promise.all([refreshRuntime(), refreshRegistry(), refreshDiscovery(), refreshUpdates(), refreshReconciliation()]);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     }
@@ -107,6 +136,18 @@ export default function App() {
       void refreshDiscovery();
       return;
     }
+    if (event.type === "updates_changed") {
+      void refreshUpdates();
+      return;
+    }
+    if (event.type === "update_transaction") {
+      rememberTransaction(event.transaction);
+      return;
+    }
+    if (event.type === "reconciliation_changed") {
+      setReconciliation(event.status);
+      return;
+    }
     if (event.type === "resync_required") {
       void refreshAll();
     }
@@ -114,8 +155,23 @@ export default function App() {
 
   useEffect(() => {
     void refreshAll();
+    for (const pendingUpdate of readPendingTransactions(window.localStorage)) {
+      void refreshUpdateTransaction(pendingUpdate.transaction_id).catch(() => {
+        // A later realtime reconnect/resync can retry durable transaction lookup.
+      });
+    }
     return connectRealtime({ onEvent: applyEvent, onState: setConnection });
   }, []);
+
+  useEffect(() => {
+    if (connection !== "connected") return;
+    void Promise.all([refreshUpdates(), refreshReconciliation()]);
+    for (const pendingUpdate of readPendingTransactions(window.localStorage)) {
+      void refreshUpdateTransaction(pendingUpdate.transaction_id).catch((cause) => {
+        setError(cause instanceof Error ? cause.message : String(cause));
+      });
+    }
+  }, [connection]);
 
   useEffect(() => {
     if (!selectedId) return;
@@ -164,6 +220,86 @@ export default function App() {
     try {
       const updated = await lifecycleAction(server.id, action);
       setServers((current) => ({ ...current, [server.id]: updated }));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setPending(null);
+    }
+  };
+
+  const runUpdateCheck = async () => {
+    setPending("updates:check");
+    setError(null);
+    try {
+      setUpdates(await checkUpdates());
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setPending(null);
+    }
+  };
+
+  const runPrepareUpdate = async (component: UpdateComponent, version: string) => {
+    setPending(`updates:${component}:prepare`);
+    setError(null);
+    try {
+      rememberTransaction(await prepareUpdate(component, version));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setPending(null);
+    }
+  };
+
+  const runApplyUpdate = async (transaction: UpdateTransaction) => {
+    setPending(`updates:${transaction.component}:apply`);
+    setError(null);
+    persistPendingTransaction(window.localStorage, transaction);
+    try {
+      rememberTransaction(await applyUpdate(transaction.component, transaction.transaction_id));
+      await refreshUpdates();
+    } catch (cause) {
+      if (transaction.component === "studio" || transaction.component === "gateway") {
+        setError("The control-path request disconnected or failed. The transaction ID is retained and will be re-queried after reconnect.");
+      } else {
+        setError(cause instanceof Error ? cause.message : String(cause));
+      }
+    } finally {
+      setPending(null);
+    }
+  };
+
+  const runRefreshUpdateTransaction = async (transactionId: string) => {
+    setPending(`updates:transaction:${transactionId}`);
+    setError(null);
+    try {
+      await refreshUpdateTransaction(transactionId);
+      await refreshUpdates();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setPending(null);
+    }
+  };
+
+  const runReconciliationCheck = async () => {
+    setPending("reconciliation:check");
+    setError(null);
+    try {
+      setReconciliation(await checkReconciliation());
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setPending(null);
+    }
+  };
+
+  const runReconciliationApply = async () => {
+    setPending("reconciliation:apply");
+    setError(null);
+    try {
+      setReconciliation(await applyReconciliation());
+      await refreshUpdates();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -274,6 +410,17 @@ export default function App() {
     ? tunnel.uptime_ms + uptimeTick * 1000
     : tunnel?.uptime_ms ?? null;
 
+  const updateRuntimeStates = useMemo<Partial<Record<UpdateComponent, string>>>(() => ({
+    filesystem: servers.filesystem?.state ?? "not registered",
+    git: servers.git?.state ?? "not registered",
+    exec: servers.exec?.state ?? "not registered",
+    blender: servers.blender?.state ?? "not registered",
+    gateway: tunnel ? `tunnel ${tunnel.state}` : "unknown",
+    studio: connection === "connected" ? "serving dashboard" : connection,
+    fleet: "control bundle",
+    tunnel: tunnel?.state ?? "unknown",
+  }), [servers, tunnel, connection]);
+
   return (
     <main className="shell">
       <header className="topbar">
@@ -289,6 +436,21 @@ export default function App() {
         <article className="summary-card"><span>MCP failed</span><strong>{failed}</strong></article>
         <article className="summary-card"><span>Tunnel</span><strong>{tunnel?.state ?? "loading"}</strong></article>
       </section>
+
+      <UpdatesPanel
+        inventory={updates}
+        reconciliation={reconciliation}
+        transactions={updateTransactions}
+        runtimeStates={updateRuntimeStates}
+        connection={connection}
+        pending={pending}
+        onCheckUpdates={runUpdateCheck}
+        onPrepare={runPrepareUpdate}
+        onApply={runApplyUpdate}
+        onRefreshTransaction={runRefreshUpdateTransaction}
+        onCheckReconciliation={runReconciliationCheck}
+        onApplyReconciliation={runReconciliationApply}
+      />
 
       <section className="detail-panel tunnel-panel" aria-label="Secure tunnel">
         <div className="detail-header"><div><p className="eyebrow">Secure tunnel</p><h2>{tunnel?.name ?? "Tunnel"}</h2></div>{tunnel && <span className={`state state-${tunnel.state}`}>{tunnel.state}</span>}</div>
