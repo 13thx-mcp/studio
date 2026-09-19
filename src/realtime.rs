@@ -3,6 +3,7 @@ use tokio::sync::broadcast;
 use crate::{
     supervisor::{LogEntry, ProcessStatus},
     tunnel::{TunnelLogEntry, TunnelStatus},
+    update::{McpUpdateTransactionView, ReconciliationView},
 };
 
 pub const EVENT_CHANNEL_CAPACITY: usize = 1024;
@@ -30,6 +31,13 @@ pub enum StudioEvent {
     },
     RegistryChanged,
     DiscoveryChanged,
+    UpdatesChanged,
+    UpdateTransaction {
+        transaction: McpUpdateTransactionView,
+    },
+    ReconciliationChanged {
+        status: ReconciliationView,
+    },
     ResyncRequired,
 }
 

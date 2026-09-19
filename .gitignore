@@ -66,6 +66,10 @@ tunnel-smoke.yaml
 *.profdata
 lcov.info
 
+# Python tooling cache
+__pycache__/
+*.py[cod]
+
 # Temporary / generated files
 *.tmp
 *.temp
@@ -75,6 +79,7 @@ lcov.info
 *~
 .cache/
 .tmp/
+.codegraph/
 
 # OS metadata
 .DS_Store

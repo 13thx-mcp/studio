@@ -8,6 +8,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
     process::Command,
@@ -19,6 +20,24 @@ use crate::{
     error::{StudioError, StudioResult},
     realtime::{EventHub, StudioEvent},
 };
+
+#[derive(Debug, Deserialize)]
+struct TunnelRuntimeFile {
+    #[serde(default)]
+    mcp: TunnelRuntimeMcp,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct TunnelRuntimeMcp {
+    #[serde(default)]
+    commands: Vec<TunnelRuntimeCommand>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TunnelRuntimeCommand {
+    channel: String,
+    command: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TunnelConfig {
@@ -64,6 +83,16 @@ pub enum TunnelState {
     Failed,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TunnelLaunchEvidence {
+    pub generation: u64,
+    pub pid: u32,
+    pub working_dir: PathBuf,
+    pub runtime_path: PathBuf,
+    pub config_path: PathBuf,
+    pub runtime_sha256: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct TunnelStatus {
     pub name: String,
@@ -105,6 +134,7 @@ struct RuntimeState {
     logs: VecDeque<TunnelLogEntry>,
     next_log_sequence: u64,
     generation: u64,
+    launch_evidence: Option<TunnelLaunchEvidence>,
 }
 
 impl Default for RuntimeState {
@@ -120,6 +150,7 @@ impl Default for RuntimeState {
             logs: VecDeque::new(),
             next_log_sequence: 1,
             generation: 0,
+            launch_evidence: None,
         }
     }
 }
@@ -209,6 +240,99 @@ impl TunnelSupervisor {
         self.runtime.lock().await.logs.iter().cloned().collect()
     }
 
+    pub(crate) fn validate_gateway_binding(
+        &self,
+        expected_gateway: &Path,
+        expected_servers_dir: &Path,
+    ) -> StudioResult<()> {
+        let (_, _, config_path) = self.validated_paths()?;
+        let config: TunnelRuntimeFile =
+            serde_yaml::from_slice(&fs::read(&config_path)?).map_err(|error| {
+                StudioError::Config(format!("tunnel runtime config is invalid YAML: {error}"))
+            })?;
+        let bindings = config
+            .mcp
+            .commands
+            .iter()
+            .filter(|entry| entry.channel == "main")
+            .collect::<Vec<_>>();
+        let [binding] = bindings.as_slice() else {
+            return Err(StudioError::Config(
+                "tunnel runtime must contain exactly one main MCP command".into(),
+            ));
+        };
+        let marker = " --config-dir ";
+        let Some((gateway, servers_dir)) = binding.command.split_once(marker) else {
+            return Err(StudioError::Config(
+                "tunnel main MCP command does not use the expected Gateway --config-dir form"
+                    .into(),
+            ));
+        };
+        if servers_dir.contains(marker) || gateway.is_empty() || servers_dir.is_empty() {
+            return Err(StudioError::Config(
+                "tunnel main MCP command is ambiguous".into(),
+            ));
+        }
+        let actual_gateway = fs::canonicalize(gateway).map_err(|error| {
+            StudioError::Config(format!(
+                "tunnel Gateway executable does not resolve: {error}"
+            ))
+        })?;
+        let actual_servers = fs::canonicalize(servers_dir).map_err(|error| {
+            StudioError::Config(format!(
+                "tunnel Gateway config directory does not resolve: {error}"
+            ))
+        })?;
+        let expected_gateway = fs::canonicalize(expected_gateway).map_err(|error| {
+            StudioError::Config(format!(
+                "expected Gateway executable does not resolve: {error}"
+            ))
+        })?;
+        let expected_servers = fs::canonicalize(expected_servers_dir).map_err(|error| {
+            StudioError::Config(format!(
+                "expected Gateway config directory does not resolve: {error}"
+            ))
+        })?;
+        if actual_gateway != expected_gateway || actual_servers != expected_servers {
+            return Err(StudioError::Config(
+                "tunnel main MCP command does not match catalog Gateway/runtime paths".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_update_binding(&self, install_root: &Path) -> StudioResult<()> {
+        let expected_root = normalize_lexical(install_root);
+        let expected_runtime = expected_root.join("current/tunnel-client-runtime-cloudflared");
+        let expected_config = expected_root.join("config.yaml");
+        let configured_runtime = normalize_lexical(&resolve_lexical(
+            self.base_dir.as_ref(),
+            &self.config.runtime,
+        ));
+        let configured_working = normalize_lexical(&resolve_lexical(
+            self.base_dir.as_ref(),
+            &self.config.working_dir,
+        ));
+        let configured_config = normalize_lexical(&resolve_lexical(
+            self.base_dir.as_ref(),
+            &self.config.config_file,
+        ));
+        if configured_runtime != expected_runtime
+            || configured_working != expected_root
+            || configured_config != expected_config
+        {
+            return Err(StudioError::Config(
+                "tunnel launcher must use the managed current runtime, canonical working directory, and config binding"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn launch_evidence(&self) -> Option<TunnelLaunchEvidence> {
+        self.runtime.lock().await.launch_evidence.clone()
+    }
+
     pub async fn start(&self) -> StudioResult<TunnelStatus> {
         let generation = {
             let mut state = self.runtime.lock().await;
@@ -230,6 +354,7 @@ impl TunnelSupervisor {
                 return Err(error);
             }
         };
+        let runtime_sha256 = sha256_file(&runtime_path)?;
         let (env, secrets) = match self.resolve_secret_env() {
             Ok(env) => env,
             Err(error) => {
@@ -281,6 +406,14 @@ impl TunnelSupervisor {
             state.started_at = Some(Instant::now());
             state.last_exit_code = None;
             state.last_error = None;
+            state.launch_evidence = Some(TunnelLaunchEvidence {
+                generation,
+                pid,
+                working_dir: working_dir.clone(),
+                runtime_path: runtime_path.clone(),
+                config_path: config_path.clone(),
+                runtime_sha256: runtime_sha256.clone(),
+            });
             let entry = state.push_log(
                 self.log_capacity,
                 TunnelLogStream::Studio,
@@ -325,6 +458,7 @@ impl TunnelSupervisor {
                 let was_stopping = state.state == TunnelState::Stopping;
                 state.pid = None;
                 state.started_at = None;
+                state.launch_evidence = None;
                 let message = match result {
                     Ok(exit) => {
                         state.last_exit_code = exit.code();
@@ -436,6 +570,7 @@ impl TunnelSupervisor {
             state.state = TunnelState::Failed;
             state.pid = None;
             state.started_at = None;
+            state.launch_evidence = None;
             state.last_error = Some(error.to_string());
             let entry = state.push_log(
                 self.log_capacity,
@@ -535,6 +670,40 @@ impl TunnelSupervisor {
         }
         Ok((env, secrets))
     }
+}
+
+fn resolve_lexical(base_dir: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        base_dir.join(path)
+    }
+}
+
+fn normalize_lexical(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+fn sha256_file(path: &Path) -> StudioResult<String> {
+    let mut file = fs::File::open(path)?;
+    let mut digest = Sha256::new();
+    std::io::copy(&mut file, &mut digest)?;
+    Ok(digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
 }
 
 fn canonicalize(base_dir: &Path, path: &Path, label: &str) -> StudioResult<PathBuf> {
@@ -782,6 +951,165 @@ mod tests {
             ),
             "token=[REDACTED] authorization: [REDACTED] password='[REDACTED]' host=example"
         );
+    }
+
+    #[test]
+    fn gateway_binding_matches_exact_server_owned_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let working = root.path().join("tunnel");
+        let bin = root.path().join("bin");
+        let servers = root.path().join("runtime/gateway/servers.d");
+        fs::create_dir_all(&working).unwrap();
+        fs::create_dir_all(&bin).unwrap();
+        fs::create_dir_all(&servers).unwrap();
+        let runtime = working.join("tunnel-client-runtime-cloudflared");
+        let gateway = bin.join("rust-mcp-gateway");
+        fs::write(&runtime, b"runtime").unwrap();
+        fs::write(&gateway, b"gateway").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&runtime, fs::Permissions::from_mode(0o755)).unwrap();
+            fs::set_permissions(&gateway, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let config = working.join("config.yaml");
+        fs::write(
+            &config,
+            format!(
+                r#"mcp:
+  commands:
+    - channel: main
+      command: "{} --config-dir {}"
+"#,
+                gateway.display(),
+                servers.display()
+            ),
+        )
+        .unwrap();
+        let supervisor = TunnelSupervisor::new(
+            TunnelConfig {
+                name: "test".into(),
+                runtime: runtime.clone(),
+                working_dir: working.clone(),
+                config_file: config.clone(),
+                env: BTreeMap::new(),
+            },
+            8,
+            Duration::from_millis(50),
+            root.path().to_owned(),
+            EventHub::default(),
+        );
+        supervisor
+            .validate_gateway_binding(&gateway, &servers)
+            .unwrap();
+
+        let other = root.path().join("runtime/other/servers.d");
+        fs::create_dir_all(&other).unwrap();
+        assert!(
+            supervisor
+                .validate_gateway_binding(&gateway, &other)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn update_binding_requires_stable_current_indirection() {
+        let root = tempfile::tempdir().unwrap();
+        let install = root.path().join("runtime/tunnel-client");
+        let release = install.join("releases/v1.0.0");
+        fs::create_dir_all(&release).unwrap();
+        let runtime = release.join("tunnel-client-runtime-cloudflared");
+        fs::write(&runtime, b"runtime").unwrap();
+        fs::write(install.join("config.yaml"), b"config").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&runtime, fs::Permissions::from_mode(0o755)).unwrap();
+            std::os::unix::fs::symlink("releases/v1.0.0", install.join("current")).unwrap();
+        }
+
+        let valid = TunnelSupervisor::new(
+            TunnelConfig {
+                name: "test".into(),
+                runtime: install.join("current/tunnel-client-runtime-cloudflared"),
+                working_dir: install.clone(),
+                config_file: install.join("config.yaml"),
+                env: BTreeMap::new(),
+            },
+            8,
+            Duration::from_millis(50),
+            root.path().to_owned(),
+            EventHub::default(),
+        );
+        valid.validate_update_binding(&install).unwrap();
+
+        let stale = TunnelSupervisor::new(
+            TunnelConfig {
+                name: "test".into(),
+                runtime: runtime.clone(),
+                working_dir: install.clone(),
+                config_file: install.join("config.yaml"),
+                env: BTreeMap::new(),
+            },
+            8,
+            Duration::from_millis(50),
+            root.path().to_owned(),
+            EventHub::default(),
+        );
+        assert!(stale.validate_update_binding(&install).is_err());
+    }
+
+    #[tokio::test]
+    async fn launch_evidence_tracks_generation_and_runtime_fingerprint() {
+        let root = tempfile::tempdir().unwrap();
+        let install = root.path().join("runtime/tunnel-client");
+        let release = install.join("releases/v1.0.0");
+        fs::create_dir_all(&release).unwrap();
+        fs::write(install.join("config.yaml"), b"config").unwrap();
+        let runtime = release.join("tunnel-client-runtime-cloudflared");
+        let write_runtime = |marker: &str| {
+            fs::write(
+                &runtime,
+                format!(
+                    "#!/bin/sh\ntrap 'exit 0' TERM INT\nwhile :; do echo {marker}; sleep 1; done\n"
+                ),
+            )
+            .unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&runtime, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        };
+        write_runtime("first");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("releases/v1.0.0", install.join("current")).unwrap();
+
+        let supervisor = TunnelSupervisor::new(
+            TunnelConfig {
+                name: "test".into(),
+                runtime: install.join("current/tunnel-client-runtime-cloudflared"),
+                working_dir: install.clone(),
+                config_file: install.join("config.yaml"),
+                env: BTreeMap::new(),
+            },
+            16,
+            Duration::from_secs(1),
+            root.path().to_owned(),
+            EventHub::default(),
+        );
+        supervisor.start().await.unwrap();
+        let first = supervisor.launch_evidence().await.unwrap();
+        assert_eq!(first.runtime_sha256, sha256_file(&runtime).unwrap());
+        supervisor.stop().await.unwrap();
+
+        write_runtime("second");
+        supervisor.start().await.unwrap();
+        let second = supervisor.launch_evidence().await.unwrap();
+        assert_ne!(first.generation, second.generation);
+        assert_ne!(first.runtime_sha256, second.runtime_sha256);
+        assert_eq!(second.runtime_sha256, sha256_file(&runtime).unwrap());
+        supervisor.shutdown().await;
     }
 
     #[test]

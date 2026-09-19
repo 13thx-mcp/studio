@@ -93,3 +93,57 @@ button, select, input { font: inherit; }
   .detail-panel { padding: 20px; }
   .log-line { grid-template-columns: 72px 50px minmax(0,1fr); }
 }
+
+.updates-panel { margin-bottom: 20px; border: 1px solid #222a33; border-radius: 16px; background: #0f141a; padding: 28px; }
+.updates-heading { align-items: flex-start; }
+.panel-note { margin: 6px 0 0; color: #8f9bab; font-size: 13px; line-height: 1.5; }
+.fleet-summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 18px; }
+.fleet-summary-grid > div,
+.reconciliation-grid > div { border: 1px solid #222a33; border-radius: 10px; background: #11171e; padding: 12px; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.fleet-summary-grid span,
+.reconciliation-grid span { color: #83909e; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+.fleet-summary-grid strong,
+.reconciliation-grid strong { font-size: 13px; overflow-wrap: anywhere; }
+.reconciliation-card { margin-bottom: 18px; border: 1px solid #283442; border-radius: 14px; padding: 18px; background: #0d131a; }
+.reconciliation-card .detail-header { margin-bottom: 14px; }
+.reconciliation-card h3 { margin: 0; }
+.reconciliation-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
+.fingerprint { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.update-card-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.update-card { min-width: 0; border: 1px solid #222a33; border-radius: 14px; padding: 18px; background: #0d1218; }
+.update-card-header { margin-bottom: 14px; align-items: flex-start; }
+.update-card-header > div { display: flex; flex-direction: column; gap: 4px; }
+.update-card-header small { color: #7e8997; text-transform: capitalize; }
+.update-badge { border: 1px solid #35404d; border-radius: 999px; padding: 5px 9px; font-size: 11px; text-transform: capitalize; white-space: nowrap; color: #aab4c0; }
+.update-current, .update-synchronized { border-color: #2d7652; color: #8de0b3; }
+.update-attention, .update-managed_safe_drift, .update-refresh_pending { border-color: #7d6630; color: #f0cd73; }
+.update-broken, .update-unmanaged_conflict { border-color: #823d43; color: #ff9ba3; }
+.update-unknown { color: #aab4c0; }
+.version-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 0 0 14px; }
+.version-grid > div { border: 1px solid #1f2832; border-radius: 9px; padding: 10px; background: #10161d; min-width: 0; }
+.version-grid dt { color: #83909e; font-size: 11px; margin-bottom: 5px; }
+.version-grid dd { margin: 0; font-size: 13px; overflow-wrap: anywhere; }
+.target-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; color: #8f9bab; font-size: 12px; }
+.target-field input { border: 1px solid #35404d; border-radius: 8px; padding: 9px 10px; background: #11171e; color: #e7ecf3; }
+.target-field input:disabled { opacity: .55; }
+.impact-copy, .rollback-note { margin: 0 0 12px; color: #9ba7b5; font-size: 12px; line-height: 1.5; }
+.rollback-note { color: #7e8997; margin-bottom: 0; }
+.transaction-box { margin: 12px 0; border: 1px solid #2b3744; border-radius: 10px; padding: 12px; background: #101720; }
+.transaction-heading { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; margin-bottom: 7px; }
+.transaction-heading code { color: #7e8997; font-size: 10px; overflow-wrap: anywhere; text-align: right; }
+.transaction-box p { margin: 6px 0; color: #aab4c0; font-size: 12px; }
+.transaction-meta { display: flex; justify-content: space-between; gap: 10px; color: #7e8997; font-size: 11px; }
+.warning-banner { margin: 10px 0; padding: 10px 12px; border: 1px solid #7d6630; border-radius: 9px; background: #211b0e; color: #f0cd73; font-size: 12px; line-height: 1.45; }
+.inline-error { margin: 9px 0; padding: 9px 11px; border: 1px solid #823d43; border-radius: 9px; background: #241216; color: #ffb2b8; font-size: 12px; }
+.compact-actions { margin-bottom: 10px; }
+
+@media (max-width: 1050px) {
+  .fleet-summary-grid, .reconciliation-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .update-card-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 680px) {
+  .updates-panel { padding: 20px; }
+  .fleet-summary-grid, .reconciliation-grid, .version-grid { grid-template-columns: 1fr; }
+  .transaction-heading, .transaction-meta { flex-direction: column; }
+}

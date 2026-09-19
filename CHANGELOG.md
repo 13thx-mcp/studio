@@ -4,6 +4,69 @@ All notable changes to MCP Studio will be documented here.
 
 The project follows Semantic Versioning once public/pre-release artifacts begin.
 
+## [Unreleased]
+
+### Added
+
+- M5.2 read-only `13thx-mcp` GitHub release provider behind the M5.1 `ReleaseProvider` contract.
+- Typed stable-release and explicit-version discovery with deterministic provider/network/metadata error mapping.
+- Metadata validation for semantic `vMAJOR.MINOR.PATCH` tags, draft/prerelease exclusion, trusted repository-bound asset URLs, and exactly one `SHA256SUMS.txt`.
+- Bounded HTTPS GitHub client behavior with fixed API origin, connect/request timeouts, response-size caps, and a Studio-specific User-Agent.
+- Hermetic provider tests covering latest/specific releases, prerelease policy, malformed metadata, checksum-manifest ambiguity, transport/HTTP failures, trusted repository mapping, and asset-list preservation.
+- ADR 0007 documenting the GitHub provider trust boundary and M5.2/M5.4/M5.5 separation.
+- M5.3 official `openai/tunnel-client` release provider behind the same M5.1 `ReleaseProvider` abstraction.
+- Upstream runtime-cloudflared asset-family validation for `tunnel-client-runtime-cloudflared-v<version>-<os>-<arch>.zip`, while preserving evidence sidecars and other release assets as metadata.
+- Shared hardened GitHub HTTP transport used by both `github_13thx` and `github_openai` providers.
+- Stable tunnel runtime identity constants for later platform selection, staging, and extracted binary version validation.
+- ADR 0008 documenting the official upstream trust boundary and runtime-cloudflared release-family policy.
+- M5.4 strict host-platform normalization for Darwin amd64/arm64 plus deterministic exact release-asset selection across MCP, Studio, Fleet, and tunnel packages.
+- Explicit trusted release asset contracts on each managed component, including architecture-independent Fleet packaging.
+- ADR 0009 documenting platform normalization and exact archive-selection policy.
+- M5.5 verified artifact staging with bounded HTTPS downloads, SHA-256 manifest validation, safe tar.gz/ZIP extraction, strict package structure checks, transient `staged.json` identity, and official tunnel staged `--version` validation.
+- ADR 0010 documenting the staging trust boundary, partial/ready directory lifecycle, archive safety rules, and guarantees available to later activation logic.
+- M5.6 runtime-artifact inventory and deterministic drift service with installed/running/desired/latest version dimensions, runtime-only/source-present host mode, process-local release-check state, and browser-safe update inventory APIs.
+- Server-side `[updates]` root configuration plus optional manual desired-version pins, with conventional `mcp-server/{bin,runtime}` root discovery for backwards-compatible runtime configs.
+- `GET /api/updates`, `GET /api/updates/{component}`, same-origin `POST /api/updates/check`, and typed `updates_changed` realtime invalidation.
+- ADR 0011 documenting inventory truth sources, preserve-current desired policy, running-identity uncertainty, and API projection boundaries.
+- M5.7 transactional updates for generic non-Gateway flat Rust MCP binaries with two-phase prepare/apply, per-component locking, Supervisor state preservation, atomic same-directory activation, mandatory version/health verification, and automatic rollback.
+- Ready staging metadata now binds validated executable SHA-256 values; M5.7 revalidates archive/executable hashes and the preparation fingerprint immediately before activation.
+- Browser-safe update transaction API/realtime progress plus ADR 0012 documenting flat-MCP activation, rollback, interruption recovery, and the M5.8 Gateway handoff.
+- M5.8 Gateway-specific update orchestration that follows the deployed tunnel-owned process model, preserves generated `runtime/gateway/servers.d`, protocol-probes the replacement Gateway/child catalog, performs bounded reconnect verification, and rolls back on activation/catalog/reconnect failure.
+- ADR 0013 documenting Gateway ownership, exact tunnel binding, standalone protocol/catalog verification, intentional reconnect phases, and rollback semantics.
+- M5.9 Fleet control-bundle transactions with legacy missing-VERSION repair, host profile/state byte preservation, schema compatibility gates, staged/active render validation, directory rollback, and source-less runtime support.
+- ADR 0014 documenting Fleet generic-versus-local ownership, schema/migration policy, render validation and rollback/recovery semantics.
+- M5.9A runtime configuration reconciliation with Fleet pure-render desired state, persisted managed fingerprints/generation, managed-safe drift repair, explicit adoption, validate-only launcher conflict detection, transactional config rollback, and startup drift detection.
+- Browser-safe reconciliation REST/realtime status plus exact local Gateway tool-name catalog fingerprinting that distinguishes catalog identity from aggregate counts without claiming remote-client refresh.
+- ADR 0015 documenting Fleet-managed generated-config ownership, pure-render authority, managed-state adoption, split launch-path validation and reconciliation rollback semantics.
+- M5.10 durable Studio self-update transactions with verified backend+web release candidates, versioned `runtime/studio/current -> releases/vX.Y.Z` activation, Fleet-owned external launcher handoff, reconnect-safe transaction recovery, startup finalization, and legacy/versioned rollback.
+- ADR 0016 documenting Studio/Fleet activation ownership, versioned release layout, durable self-update journal, health proof, reboot/interruption recovery, and bootstrap compatibility.
+- M5.11 Updates/Fleet dashboard with browser-safe runtime inventory, version/drift/check visibility, typed update transaction progress, Gateway/Studio reconnect recovery, runtime reconciliation/catalog status, and managed-safe reconciliation control.
+- Pending update transaction references are retained per transaction/component across browser reconnect and refetched from the authoritative transaction API; unrelated concurrent component transactions are preserved independently.
+- Release metadata checks now fan out concurrently across the closed component catalog while preserving trusted provider/error semantics and deterministic inventory output.
+- M5.12 official Tunnel update transactions with verified OpenAI staging, versioned `releases/vX.Y.Z` activation, atomic `current` switch, stopped/running ownership preservation, host-local config/credential preservation, automatic rollback, same-version force reinstall, and startup recovery.
+- M5.12 incident-derived runtime reconciliation closure drill, source-less/runtime-only operator guides, rollback guide, Studio self-update operations guide, and detailed Milestone 5 status evidence.
+- M5 review remediation adds permanent F1–F8 regressions, catalog-scoped mutation coordination, durable Tunnel crash-recovery journals, post-rename compensation, process-bound Studio/Fleet activation protocol v2 with nonce/PID/config proof, strict validate-only launcher templates, persistent loaded-config restart truth, and independently derived exact Gateway tool catalogs.
+- Fixed-tree remediation verification tooling now records Studio/Fleet provenance, validates that required filtered tests actually executed, enforces per-command process-group timeouts/cleanup, archives raw gate logs without build trees, and verifies the current native Darwin package using the same backend+web layout as the release workflow.
+
+### Security
+
+- Browser/caller data cannot select GitHub repository coordinates or API base URLs; provider lookups re-resolve component policy through the server-owned catalog.
+- Release asset URLs are accepted only when they are HTTPS GitHub release-download URLs under the trusted catalog owner/repository.
+- M5.2 performs no release archive download, extraction, activation, restart, or rollback.
+- The tunnel provider accepts only the catalog-owned `openai/tunnel-client` source and rejects caller-forged repository identity, malformed/mismatched runtime ZIPs, and ambiguous platform targets.
+- M5.3 performs no release archive download, checksum verification, extraction, activation, restart, or rollback.
+- M5.4 rejects unsupported hosts, missing/duplicate exact archive names, release/component mismatches, wrong-version/architecture lookalikes, and architecture fallback; it still performs no archive download or runtime mutation.
+- M5.5 rejects checksum mismatches, malformed manifests, oversized/corrupt archives, traversal/absolute paths, duplicate paths, symlink/hardlink/special entries, unexpected package layouts, and tunnel version mismatch before any active installation change.
+- M5.6 inventory probes only catalog-derived runtime artifacts, never source Git/manifests; update check errors are sanitized before browser publication and inventory DTOs omit internal paths/repository/download authority.
+- M5.7 rejects arbitrary update paths/URLs, stale/tampered staged artifacts, registry/catalog target mismatch, duplicate same-component transactions, and unsafe restart behavior; known-good rollback material is checksum protected and verified after restoration.
+- M5.8 rejects untrusted/ambiguous tunnel-to-Gateway bindings, generated-config mutation, managed child commands outside catalog flat-bin targets, duplicate Gateway transactions, failed child catalogs, reconnect timeout, and unverifiable rollback.
+- M5.9 rejects Fleet generic-file TOCTOU, example-profile overwrite, unknown schema, untrusted host roots, unexpected/unsafe local state, render drift, duplicate Fleet transactions, and unverifiable bundle rollback.
+- M5.9A rejects untrusted render-plan roots/paths/hashes/effects, symlink or special-file managed targets, unknown local edits, stale/noncanonical launcher bindings, cross-origin reconciliation mutations, equal-count catalog identity substitution, and unverifiable config rollback.
+- M5.10 rejects source/debug self-update callers, browser-provided activation authority, staged/candidate tamper, unsafe release trees/current symlinks, mismatched backend/web release identity, launcher unavailability, and unverifiable self-update rollback.
+- M5.11 exposes no browser release/path/PID/command/checksum authority and only permits reconciliation apply from backend-approved managed-safe drift.
+- M5.12 Tunnel activation accepts only official catalog-owned OpenAI releases, revalidates staged/candidate identity before stop, confines mutation to versioned release/current paths, fingerprints host-local config/credentials, rejects downgrade/tamper/unsafe pointers, and makes rollback failure explicit.
+- M5 review remediation rejects stale fixed-release Tunnel launch bindings, unjournaled/ambiguous crash recovery, premature Studio self-update terminal authority, unrelated-listener readiness substitution, launcher shadowing, false-cleared Studio restart state, and equal-count/wrong-name Gateway catalogs.
+
 ## [0.4.0] - 2026-09-17
 
 ### Milestone
