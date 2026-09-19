@@ -2,7 +2,7 @@
 
 - Target release: `v0.5.0`
 - Implementation branch: `feat/m5-runtime-distribution`
-- Status: IMPLEMENTATION VERIFIED — RELEASE QUALIFICATION BLOCKED
+- Status: LOCAL RELEASE CLOSED — PUBLICATION QUALIFICATION BLOCKED
 - Date: 2026-09-19
 
 ## Review remediation status
@@ -11,15 +11,15 @@ The 2026-09-19 Mission 5 review found F1–F8 safety/correctness gaps. Correctiv
 
 R6 fixed-tree verification is complete on Studio `a388cf2` and Fleet `8b82752`: regressions, core/Fleet, security, isolated integration and native darwin-arm64 package profiles all passed with clean before/after worktrees and no source change during any run. Evidence: `issues/m5-remediation/results/20260919T140643Z-18307`, `issues/m5-remediation/results/20260919T140854Z-21177`, `issues/m5-remediation/results/20260919T141313Z-27968`, `issues/m5-remediation/results/20260919T141541Z-31839`, `issues/m5-remediation/results/20260919T141810Z-37530`.
 
-This supports **IMPLEMENTATION VERIFIED** and local merge readiness. It does not establish **RELEASE QUALIFIED**: darwin-amd64 still requires a native runner, and published project-owned artifact/bootstrap/update proofs remain outstanding. Previously recorded public-release endpoint failures below are historical evidence and were not freshly rechecked by the remediation matrix.
+This supports **LOCAL RELEASE CLOSED**. It does not establish **PUBLICATION QUALIFIED**: darwin-amd64 still requires a native runner, and published project-owned artifact/bootstrap/update proofs remain outstanding. Previously recorded public-release endpoint failures below are historical evidence and were not freshly rechecked by the remediation matrix.
 
 ## Outcome
 
 Milestone 5 implements the runtime distribution/update architecture for source-present and source-less macOS hosts: trusted release providers, strict platform asset selection, verified staging, runtime inventory, transactional MCP/Gateway/Fleet/Tunnel updates, runtime-config reconciliation, Studio self-update through an external Fleet launcher, and the Updates/Fleet dashboard.
 
-The implementation and local/source-less fixture verification are green. Release closure is not complete because the unauthenticated GitHub Releases endpoints used by the project-owned provider currently return HTTP 404 for every checked `13thx-mcp/*` component. Therefore a clean source-less bootstrap from published project-owned artifacts and the final `v0.5.0` publication/tag pipeline cannot yet be truthfully verified.
+The implementation and local/source-less fixture verification are green. Local release closure is complete. The unauthenticated GitHub Releases endpoints used by the project-owned provider currently return HTTP 404 for every checked `13thx-mcp/*`, so a clean source-less bootstrap from published project-owned artifacts and publication qualification cannot yet be truthfully verified.
 
-Studio remains version `0.4.0`; no `v0.5.0` bump, tag, merge to `main`, or release publication was performed.
+Studio and web package versions are `0.5.0`; the locally verified branch is merged to local `main` and tagged `v0.5.0`. No release publication was performed.
 
 ## Implemented architecture
 
@@ -286,18 +286,16 @@ The official OpenAI tunnel release path is not blocked; `v0.0.14` discovery/stag
 | 13. No unattended auto-update/reconciliation | PASS | no scheduler/policy exposed |
 | 14. Full backend/frontend/security/release gates | PASS | all local gates green |
 | 15. Real end-to-end source-less smoke + fault injection | PARTIAL / RELEASE BLOCKED | runtime-only/fault drills pass; published project-artifact bootstrap cannot run while endpoints are 404 |
-| 16. `v0.5.0` artifacts reproducible/publishable | RELEASE BLOCKED | release build is green, but package remains 0.4.0 and publication proof awaits project releases + final bump/tag |
+| 16. `v0.5.0` artifacts reproducible/publishable | LOCAL TAGGED / PUBLICATION BLOCKED | local release build is green; publication proof awaits project releases |
 
-## Required release-unblock sequence
+## Required publication-unblock sequence
 
-Before M5 may be marked RELEASE COMPLETE:
+Before M5 may be marked PUBLICATION QUALIFIED:
 
 1. publish/restore the expected stable project-owned GitHub Releases and checksum manifests;
 2. rerun `POST /api/updates/check` on a source-less fixture and require successful project release metadata;
 3. bootstrap a fresh runtime root from those published project/Fleet/Studio assets plus official OpenAI Tunnel assets;
 4. exercise at least one genuine published project version transition or controlled prerelease transition;
-5. bump Studio/web/changelog to `0.5.0` only after those checks pass;
-6. run all final release gates and native release packaging;
-7. reconcile integration branch with current `main`, validate merge readiness, merge once with `--no-ff`, push if permitted, delete integration branch, then create/push `v0.5.0` only after publication readiness is proven.
+5. publish the locally tagged `v0.5.0` release artifacts only after those checks pass.
 
-Until that sequence is complete, M6 should not be treated as the released-baseline successor to M5.
+Until that sequence is complete, M6 should not be treated as the publication-qualified baseline successor to M5.

@@ -6,6 +6,8 @@ The project follows Semantic Versioning once public/pre-release artifacts begin.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-19
+
 ### Added
 
 - M5.2 read-only `13thx-mcp` GitHub release provider behind the M5.1 `ReleaseProvider` contract.

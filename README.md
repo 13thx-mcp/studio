@@ -4,7 +4,7 @@ Local-first web control plane for safely discovering, registering, configuring, 
 
 ## Current status
 
-Milestone 4 — Registry, Configuration & Auto-Discovery is complete and released as `v0.4.0`.
+Milestone 5 — Runtime Distribution, Update Manager & Fleet State is complete and locally released as `v0.5.0`. Public artifact qualification remains tracked in `docs/milestone-5-status.md`.
 
 Current capabilities include:
 
@@ -297,13 +297,14 @@ pnpm test
 pnpm build
 ```
 
-The M4 release gate also passed real-workspace discovery/registration/persistence/enable-disable/unregister smoke tests, WebSocket reconnect verification, source-preservation verification, and real tunnel lifecycle regression. See `docs/milestone-4-status.md`.
+The M5 local release gate passed Rust/frontend quality checks, update/reconciliation regressions, security checks, and native Darwin arm64 packaging. Public artifact qualification remains tracked in `docs/milestone-5-status.md`.
 
 ## Engineering documents
 
 - `ROADMAP.md` — long-term milestone plan.
 - `docs/milestone-4-design.md` — M4 design contract.
 - `docs/milestone-4-status.md` — completed M4 verification and closure evidence.
+- `docs/milestone-5-status.md` — M5 local closeout and public-artifact qualification evidence.
 - `docs/architecture.md` — current component/runtime architecture.
 - `docs/threat-model.md` — active security model.
 - `docs/adr/0004-file-backed-mcp-registry.md` — persistence/path policy.
