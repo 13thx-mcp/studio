@@ -4,7 +4,7 @@ Local-first web control plane for safely discovering, registering, configuring, 
 
 ## Current status
 
-Milestone 5 — Runtime Distribution, Update Manager & Fleet State is complete and locally released as `v0.5.0`. Public artifact qualification remains tracked in `docs/milestone-5-status.md`.
+Milestone 6 — Persistence, Metrics & Auditability is implemented as `v0.6.0-alpha` and locally qualified. Final closure depends on independent M5 publication evidence; see `docs/milestone-6-status.md`.
 
 Current capabilities include:
 
@@ -36,7 +36,7 @@ SQLite history/metrics/audit persistence, automatic restart/backoff, remote auth
 - Rust 1.98.1
 - Cargo
 - Node.js and pnpm for dashboard development/build
-- Unix platform (macOS/Linux) for signal-based graceful process control
+- macOS on Apple Silicon (arm64) for supported runtime operation
 - Existing `mcp-server/tunnel-client` runtime bundle for tunnel lifecycle management
 
 The pinned Rust toolchain is declared in `rust-toolchain.toml`.
