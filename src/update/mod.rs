@@ -44,6 +44,7 @@ pub use reconciliation::{
 pub use self_update::{SelfUpdateManager, write_activation_ready_proof_from_env};
 pub use staging::{ArtifactStager, StagedArtifact};
 pub use thirteenthx::ThirteenthXReleaseProvider;
+pub(crate) use transaction::ArtifactHistoryIdentity;
 pub use transaction::{
     ApplyMcpUpdateRequest, McpUpdateManager, McpUpdatePhase, McpUpdateTransactionView,
     PrepareMcpUpdateRequest,
@@ -527,7 +528,6 @@ pub enum OperatingSystem {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Architecture {
-    Amd64,
     Arm64,
 }
 
@@ -543,7 +543,6 @@ impl fmt::Display for Platform {
             OperatingSystem::Darwin => "darwin",
         };
         let arch = match self.arch {
-            Architecture::Amd64 => "amd64",
             Architecture::Arm64 => "arm64",
         };
         write!(formatter, "{os}-{arch}")
@@ -1027,14 +1026,6 @@ mod tests {
 
     #[test]
     fn platform_identity_has_stable_target_names() {
-        assert_eq!(
-            Platform {
-                os: OperatingSystem::Darwin,
-                arch: Architecture::Amd64,
-            }
-            .to_string(),
-            "darwin-amd64"
-        );
         assert_eq!(
             Platform {
                 os: OperatingSystem::Darwin,

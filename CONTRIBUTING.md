@@ -21,7 +21,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
 ```
 
-Dependency audit is required in CI/release workflows.
+Dependency audit is required before release.
 
 ## Error handling
 
@@ -55,4 +55,4 @@ Security review is mandatory for changes involving process spawning/termination,
 
 ## Definition of Done
 
-A change is done only when acceptance criteria pass, tests and docs are current, CI is green, security implications are addressed, and rollback/migration impact is understood.
+A change is done only when acceptance criteria pass, tests and docs are current, required verification passes, security implications are addressed, and rollback/migration impact is understood.

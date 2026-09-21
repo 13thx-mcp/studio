@@ -175,7 +175,6 @@ version validation
 format / lint / clippy / test
    ↓
 macOS native builds
-   ├── darwin-amd64
    └── darwin-arm64
    ↓
 versioned tar.gz artifacts
@@ -492,14 +491,12 @@ Supports official `openai/tunnel-client` runtime releases with the same integrit
 Minimum initial runtime targets:
 
 ```text
-darwin-amd64
 darwin-arm64
 ```
 
 Platform resolution must normalize common host values safely:
 
 ```text
-x86_64 / amd64 → amd64
 arm64 / aarch64 → arm64
 Darwin → darwin
 ```
@@ -735,7 +732,7 @@ Exact endpoint naming may change during design review.
 
 ### 5.15 Verification
 
-- correct amd64/arm64 selection;
+- correct arm64 selection and Intel-host rejection;
 - no matching artifact;
 - malformed release metadata;
 - checksum mismatch;
@@ -766,6 +763,8 @@ A source-less macOS host can be installed, inspected, updated, reconciled, resta
 
 **Target:** `v0.6.0-alpha`
 
+**Implementation status (2026-09-20):** M6.1–M6.8 production work is substantially implemented on `feature/m6` and local Rust/web/security/regression qualification is green. Final milestone closure remains BLOCKED only by the independent M5-dependent native package/publication evidence after clean-source qualification. The required native target is darwin-arm64. Current-host real storage-fault, crash-atomicity, two-process self-update, source-less package and binary-rollback qualification are green. See `docs/milestone-6-status.md`.
+
 ### Goal
 
 Persist operational history, update history, audit data, and useful metrics across Studio restarts.
@@ -774,7 +773,7 @@ Persist operational history, update history, audit data, and useful metrics acro
 
 Introduce SQLite for:
 
-- registered MCP servers or registry metadata migration where appropriate;
+- historical registry revision metadata only; the file-backed registry remains authoritative and is not migrated to SQLite;
 - runtime sessions;
 - process events;
 - tunnel events;
@@ -838,26 +837,481 @@ Operational and update history survives restart and can explain how the currentl
 
 ---
 
-## Milestone 7 — Hardening, Auto-Update Policy & Recovery
+## Milestone 7 — Gateway Coordination, Concurrency & Tool Safety
 
 **Target:** `v0.7.0-beta`
 
 ### Goal
 
-Make local unattended operation safe enough for regular runtime-host use.
+Turn Gateway from a routing/aggregation layer into a bounded, observable request-coordination boundary for all MCP traffic before unattended runtime automation is enabled.
+
+M7 must preserve the existing typed MCP model. It must **not** replace Filesystem/Git/Exec or other domain MCPs with a broad general-purpose worker, and it must not make chat/session identity an authorization boundary.
+
+Target flow:
+
+```text
+ChatGPT / Codex / local MCP client
+              │
+              ▼
+      Secure MCP Tunnel
+              │
+              ▼
+┌───────────────────────────────────────┐
+│ rust-mcp-gateway                      │
+│                                       │
+│ Request Coordination Layer            │
+│ ├── admission / policy                │
+│ ├── request identity / deadline       │
+│ ├── bounded queue / concurrency       │
+│ ├── cancellation / outcome semantics  │
+│ ├── graceful drain                    │
+│ ├── restart backoff / circuit breaker │
+│ ├── payload budget                    │
+│ ├── tool profiles                     │
+│ └── telemetry / correlation           │
+└──────────┬──────────┬──────────┬──────┘
+           │          │          │
+      filesystem     git        exec       ...
+           │          │          │
+           └──── typed capability MCPs ────┘
+```
+
+Studio remains the operator/control-plane surface. M6 SQLite remains historical evidence and must never become live request authority.
+
+### 7.1 Request Lifecycle and Outcome Semantics
+
+Gateway must distinguish request state before and after dispatch.
+
+Minimum state model:
+
+```text
+RECEIVED
+  ↓
+ADMITTED
+  ↓
+QUEUED
+  ↓
+DISPATCHED
+  ↓
+COMPLETED
+```
+
+Required terminal/error distinctions:
+
+```text
+CANCELLED_BEFORE_DISPATCH
+DEADLINE_EXPIRED_BEFORE_DISPATCH
+OUTCOME_PENDING
+OUTCOME_UNKNOWN
+CHILD_ERROR
+RESPONSE_REJECTED
+```
+
+Semantics:
+
+- cancellation/deadline before dispatch must guarantee the child tool was not called;
+- cancellation/deadline after dispatch must not claim that a side effect was undone;
+- a caller disconnect after dispatch must retain enough local state to classify the result as pending or unknown rather than encouraging blind retry;
+- mutation failures with unknown outcome must return explicit retry guidance;
+- Gateway must never automatically replay a failed, expired, disconnected, or unknown-outcome mutation;
+- request/correlation IDs must be generated or normalized server-side and must not be treated as authorization input.
+
+Where the MCP transport supports cancellation/progress, Gateway should propagate it while preserving the outcome distinction above.
+
+### 7.2 Active Request Registry and Graceful Drain
+
+Gateway must maintain an in-memory active-request registry with enough metadata to support safe drain, status, and telemetry without persisting tool arguments by default.
+
+Minimum tracked fields:
+
+```text
+request_id
+correlation_id
+child
+tool
+class: read | mutation | long-running | control
+received_at
+queued_at
+dispatched_at
+completed_at
+deadline
+state
+```
+
+Introduce explicit Gateway drain behavior:
+
+```text
+RUNNING
+  ↓
+DRAINING
+  ↓
+DRAINED
+  ↓
+RESTARTING / UPDATING
+  ↓
+RUNNING
+```
+
+Drain requirements:
+
+- reject or defer new mutations once draining begins;
+- optionally allow explicitly classified safe reads while policy permits;
+- wait for dispatched mutations to reach known terminal state before destructive restart/update;
+- expose active count, queued count, oldest request age, and drain reason;
+- time-bounded drain must fail closed rather than killing work silently;
+- Gateway reload/update, child restart, and Studio/Fleet activation paths must use the drain contract where they could interrupt active work.
+
+### 7.3 Bounded Concurrency and Backpressure
+
+Gateway must enforce bounded resource use independently of the Secure MCP Tunnel transport.
+
+Support:
+
+- global active-call limit;
+- global bounded queue;
+- per-child concurrency limit;
+- optional per-tool concurrency limit;
+- queue wait timeout/deadline;
+- queue-depth and wait-time telemetry;
+- deterministic rejection when capacity policy is exceeded.
+
+Initial policy should allow different limits by risk profile, for example:
+
+```text
+filesystem/read      high concurrency
+git/inspection       moderate concurrency
+git/mutation         low concurrency
+exec                 low bounded concurrency
+hardware/HIL         serialized or explicitly bounded
+release/update       single-flight
+```
+
+Concurrency policy must be configuration-driven and must not silently broaden capability.
+
+### 7.4 Child Runtime Resilience
+
+Extend the current `restart.policy = on-failure` model with bounded restart control:
+
+```yaml
+restart:
+  policy: on-failure
+  max_attempts: 3
+  backoff:
+    initial_ms: 500
+    max_ms: 30000
+  circuit_breaker:
+    threshold: 5
+    cooldown_ms: 60000
+```
+
+Required behavior:
+
+- exponential backoff with an upper bound;
+- consecutive-failure tracking;
+- crash-loop detection;
+- circuit-open state with `retry_at`;
+- no unbounded restart loop;
+- active/dispatched work blocks unsafe manual restart;
+- child failure remains isolated from unrelated children where possible;
+- recovery does not fabricate success if initialization/tool-catalog refresh fails.
+
+Expose at least:
+
+```text
+healthy
+degraded
+circuit_open
+restart_count
+consecutive_failures
+last_failure
+retry_at
+```
+
+### 7.5 Filesystem v2 — Efficient Reads, CAS and Patch Safety
+
+Keep Filesystem MCP capability-confined and typed. Do not replace it with a general shell/file worker.
+
+Add at least:
+
+```text
+read_text_file_range
+search_text
+file_metadata
+patch_text_file
+```
+
+Introduce content revision identity, preferably SHA-256 for bounded text files:
+
+```text
+read_text_file(...)
+→ content
+→ revision: sha256:<digest>
+```
+
+Mutations should support optimistic concurrency:
+
+```text
+patch_text_file(
+  path,
+  expected_revision,
+  ...
+)
+```
+
+and/or:
+
+```text
+write_text_file(
+  path,
+  content,
+  expected_revision
+)
+```
+
+If the current file differs from the expected revision, fail with an explicit stale-write conflict rather than overwriting.
+
+Design requirements:
+
+- CAS/revision is the correctness mechanism;
+- optional in-process file locks may coordinate concurrent MCP requests but are not a filesystem security boundary;
+- canonical root confinement remains mandatory;
+- external edits by users, IDEs, generators, or other processes must be detectable through revision mismatch;
+- patch operations must be atomic where practical;
+- range/search APIs must be bounded to reduce unnecessary full-file ingestion and token cost.
+
+### 7.6 Payload Budget and Oversized Result Handling
+
+Gateway must apply transport-independent request/response budgets before large MCP results reach the client context.
+
+Support bounded limits for:
+
+```text
+request bytes
+response bytes
+structured content bytes
+text preview bytes
+binary/base64 content
+```
+
+For oversized results:
+
+- do not forward the full payload by default;
+- return bounded metadata and a useful preview;
+- provide a narrower retry recommendation such as range/filter/pagination;
+- optionally spill the full result to a local ephemeral artifact referenced by opaque artifact ID/content hash;
+- artifacts must have TTL, total disk budget, bounded retrieval, and cleanup;
+- raw sensitive payload archival must be opt-in, not the default;
+- M6 history should record metadata such as original/forwarded size and guard action, not full payload content.
+
+### 7.7 Tool Profiles and Capability Surface
+
+Build on the existing Gateway child `tool_allowlist` and introduce named operator policy profiles.
+
+Initial profile direction:
+
+```text
+inspect
+develop
+release
+ops
+hardware
+```
+
+Example intent:
+
+- `inspect`: read/search/status/diff/log/diagnostic tools;
+- `develop`: adds confined file mutation, staging/commit, and approved execution;
+- `release`: adds guarded history normalization, merge/tag/publication checks;
+- `ops`: adds Gateway/Studio/Fleet control-plane operations;
+- `hardware`: exposes explicitly approved GPIO/reader/belt/HIL operations.
+
+Requirements:
+
+- profile selection must be server/operator policy, not arbitrary untrusted request authority;
+- hidden tools remain implemented but non-routable through the active profile;
+- control-plane mutation tools such as Gateway reload/enable-disable should not be part of the normal default coding surface;
+- `workspace_execute` remains explicit high-trust development execution and should not be required for read-only inspection workflows;
+- profile changes emit tool-list refresh notifications and are auditable.
+
+### 7.8 Workspace Context and Alias Convenience
+
+A workspace registry may provide names/aliases for repeated project selection:
+
+```text
+workspace_register
+workspace_list
+workspace_bind
+workspace_current
+```
+
+Rules:
+
+- workspace/session context is convenience, not authorization;
+- every resolved path must still pass the underlying MCP root/path policy;
+- explicit tool arguments remain authoritative for the actual operation;
+- ambiguous aliases fail closed;
+- session metadata may help retain convenience binding across reconnects but must not grant additional filesystem/process capability;
+- implementation must not require one child process per chat for otherwise stateless typed MCPs.
+
+### 7.9 Gateway Resources and Progress Forwarding
+
+Expand Gateway beyond tools where protocol support is stable.
+
+Support aggregation/forwarding for:
+
+```text
+resources/list
+resources/read
+notifications/progress
+```
+
+Potential local read-only resources include:
+
+```text
+gateway://status
+workspace://current
+workspace://repositories
+studio://runtime-inventory
+hardware://inventory
+```
+
+Requirements:
+
+- resources remain bounded and read-oriented;
+- resource aggregation must preserve child identity and collision handling;
+- long-running Exec/HIL/tool operations should forward meaningful progress when the child provides it;
+- progress is informational and must never be mistaken for committed operation state.
+
+### 7.10 Gateway Telemetry into M6 History
+
+Integrate real Gateway-observed request metadata into Studio/M6 history.
+
+Record bounded metadata such as:
+
+- request count;
+- success/error count;
+- queue depth and wait time;
+- active calls;
+- request latency;
+- p50/p95 latency;
+- timeout/cancellation counts;
+- outcome-pending/outcome-unknown counts;
+- child/tool identity where policy permits;
+- response-size and payload-guard metrics;
+- restart/circuit-breaker events;
+- catalog generation / exposed-tool fingerprint.
+
+Privacy requirements:
+
+- do not persist tool arguments by default;
+- do not persist complete tool results by default;
+- do not persist arbitrary MCP payloads by default;
+- correlation IDs must not encode secret/user content;
+- sensitive payload debugging requires explicit opt-in with bounded retention.
+
+### 7.11 Secure MCP Tunnel Native Runtime Adapter
+
+Treat official `openai/tunnel-client` as the transport/runtime substrate rather than duplicating all of its process/runtime semantics inside Studio.
+
+Add a constrained adapter over supported upstream interfaces such as:
+
+```text
+doctor
+runtimes connect
+runtimes status --json
+runtimes stop
+health/readiness/metrics
+control-plane poll health
+```
+
+Boundary:
+
+**Official tunnel-client owns**
+
+- tunnel protocol transport;
+- runtime/profile semantics;
+- local health/readiness;
+- control-plane polling;
+- supported runtime process management.
+
+**Studio/Fleet retain authority for**
+
+- desired version;
+- verified release discovery/staging;
+- transactional update/rollback;
+- installed/running identity;
+- fleet drift;
+- operator policy;
+- historical audit.
+
+Do not regress M5 transactional update/rollback guarantees when delegating runtime lifecycle details upstream.
+
+Before freezing this adapter contract, synchronize and review the current official tunnel-client revision rather than designing against a stale checkout.
+
+### 7.12 Verification
+
+Permanent tests must cover at least:
+
+- cancellation before dispatch proves no child call occurred;
+- timeout after dispatch reports pending/unknown outcome without replay;
+- caller disconnect during mutation;
+- drain with active reads/mutations;
+- restart/update rejected or deferred while unsafe work remains;
+- global/per-child queue saturation;
+- queue timeout and fairness;
+- crash-loop backoff and circuit-open behavior;
+- child recovery without affecting healthy siblings;
+- stale external file edit rejected by CAS;
+- concurrent patch conflict;
+- bounded range/search behavior;
+- oversized text/structured/binary response guarding;
+- ephemeral artifact TTL/disk bound;
+- profile tool-surface correctness and `tools/list_changed`;
+- workspace alias ambiguity and confinement;
+- resource aggregation/collision handling;
+- progress forwarding;
+- M6 telemetry persistence without payload persistence;
+- Tunnel adapter health/readiness/poll-health distinction;
+- long-running concurrency/soak and failure injection.
+
+### Exit Criteria
+
+Gateway is a bounded coordination boundary rather than only a router:
+
+- mutating calls cannot be silently replayed after timeout/disconnect;
+- updates/restarts can drain active work safely;
+- queue/concurrency/restart behavior is bounded;
+- file mutations detect stale external changes;
+- oversized responses cannot flood client context unchecked;
+- normal tool surfaces are least-privilege profiles;
+- request metadata is observable through M6 without storing payloads by default;
+- typed domain MCPs remain the capability/security boundary;
+- official Secure MCP Tunnel remains the transport/runtime substrate.
+
+---
+
+## Milestone 8 — Hardening, Auto-Update Policy & Recovery
+
+**Target:** `v0.8.0-beta`
+
+### Goal
+
+Use the M7 coordination/drain/health primitives to make local unattended operation safe enough for regular runtime-host use.
+
+Automatic update/reconciliation must not be enabled before the M7 request-coordination and drain contracts are verified.
 
 ### Runtime Reliability
 
 - configurable auto-restart;
-- exponential restart backoff;
-- crash-loop detection/circuit breaker;
+- Gateway/child exponential restart backoff and circuit-breaker policy built on M7 primitives;
 - health-check abstraction;
 - partial component failure isolation;
 - Studio restart reconciliation;
 - startup and periodic Fleet-managed runtime-config reconciliation;
 - bounded reconcile retry/backoff and drift-loop circuit breaker;
 - unmanaged/local config conflicts never auto-overwritten;
-- tunnel failure isolation.
+- tunnel failure isolation;
+- unattended actions respect Gateway drain/active-request state.
 
 ### Update Policies
 
@@ -878,7 +1332,9 @@ auto-update-safe
 - supported platform;
 - no conflicting active update;
 - rollback material available where required;
-- component-specific restart policy permits activation.
+- component-specific restart policy permits activation;
+- required Gateway/child drain has completed;
+- no unknown-outcome mutation blocks safe activation.
 
 Auto-update must never auto-resolve source Git conflicts.
 
@@ -894,7 +1350,7 @@ Support:
 - maintenance window;
 - deferred restart where component semantics allow it.
 
-Safe automatic reconciliation may use the M5.9A primitive only for a proven managed-safe drift class. Unknown edits, secret-bearing ambiguity, repeated failed repair, or rollback uncertainty must stop automatic mutation and require operator action.
+Safe automatic reconciliation may use the M5.9A primitive only for a proven managed-safe drift class. Unknown edits, secret-bearing ambiguity, repeated failed repair, active unsafe work, unknown request outcome, or rollback uncertainty must stop automatic mutation and require operator action.
 
 ### Recovery
 
@@ -904,79 +1360,29 @@ Safe automatic reconciliation may use the M5.9A primitive only for a proven mana
 - failed activation recovery;
 - stale update-lock recovery;
 - interrupted download/staging cleanup;
-- diagnostics bundle without secrets.
+- diagnostics bundle without secrets;
+- recovery after Studio/Gateway restart while request history contains pending/unknown outcomes;
+- safe operator workflow to resolve an unknown mutation outcome before retry.
 
 ### Verification
 
 - repeated crash/restart tests;
 - interrupted update fault injection;
+- update/restart while Gateway is busy;
+- failed/expired drain;
 - disk-full behavior;
 - corrupted prior release;
 - rollback failure handling;
 - Studio forced restart during update state transitions;
+- repeated reconciliation failure/circuit-open behavior;
 - long-running runtime-host soak.
 
 ### Exit Criteria
 
-A runtime host can operate with safe periodic update checking and optional constrained automatic updates without entering uncontrolled restart/update loops.
+A runtime host can operate with safe periodic update checking and optional constrained automatic updates without entering uncontrolled restart/update loops, interrupting active mutations silently, or replaying operations with unknown outcomes.
 
 ---
 
-## Milestone 8 — MCP Gateway & Accurate Usage Telemetry
-
-**Target:** `v0.8.0-beta`
-
-### Goal
-
-Integrate Gateway as an observable first-class runtime component and report real MCP traffic metadata.
-
-### Runtime Flow
-
-```text
-MCP Client
-    │
-Secure Tunnel
-    │
-    ▼
-rust-mcp-gateway
-    │
-    ├── Filesystem MCP
-    ├── Git MCP
-    ├── Exec MCP
-    ├── Blender MCP
-    └── Other configured MCPs
-```
-
-### Features
-
-- Gateway lifecycle/state in Studio;
-- child server catalog and health;
-- Gateway reconnect/reload visibility;
-- exact exposed tool-name set fingerprint / catalog generation;
-- `tools/list_changed` emission and refresh-pending visibility;
-- connected-client catalog acknowledgement/refresh telemetry when the protocol exposes it;
-- request count;
-- success/error count;
-- requests per minute;
-- per-tool usage where protocol-safe;
-- request latency;
-- p50/p95 latency;
-- active sessions;
-- optional per-MCP/tool policy visibility.
-
-### Privacy/Security Requirements
-
-- do not persist request payloads by default;
-- do not persist MCP tool arguments by default;
-- metadata telemetry should satisfy normal observability;
-- sensitive payload logging requires explicit opt-in and clear warnings;
-- Gateway policy and generated `servers.d` remain server-side controlled.
-
-### Exit Criteria
-
-Studio reports real usage and health based on traffic/metadata Gateway actually observes, not guessed request activity.
-
----
 
 ## Milestone 9 — Release Candidate: Security, Upgrade Safety & Operations
 
@@ -1038,7 +1444,6 @@ Prepare the complete control plane for production-grade deployment.
 Initial required production matrix:
 
 ```text
-macOS / Intel (amd64)
 macOS / Apple Silicon (arm64)
 ```
 
@@ -1325,8 +1730,8 @@ v0.3.0        Tunnel Management                    COMPLETE
 v0.4.0        Registry + Discovery                 COMPLETE
 v0.5.0        Runtime Distribution + Update Mgr    IMPLEMENTED / RELEASE BLOCKED
 v0.6.0-alpha  Persistence + Metrics + Audit
-v0.7.0-beta   Hardening + Auto-Update + Recovery
-v0.8.0-beta   Gateway + Real Usage Telemetry
+v0.7.0-beta   Gateway Coordination + Tool Safety
+v0.8.0-beta   Hardening + Auto-Update + Recovery
 v0.9.0-rc     Security + Upgrade Safety + RC
 v1.0.0        Production Grade
 ```
@@ -1350,4 +1755,4 @@ Required release-unblock sequence:
 6. Reconcile the M5 integration branch with current main, merge once with --no-ff, publish, delete the integration branch, then tag v0.5.0.
 ```
 
-M6 implementation should not be treated as the released-baseline successor until this M5 publication gate is cleared. Do not enable unattended auto-update or periodic unattended reconciliation; those policies remain M7 scope.
+M6 implementation should not be treated as the released-baseline successor until this M5 publication gate is cleared. Do not enable unattended auto-update or periodic unattended reconciliation; those policies remain M8 scope after M7 request coordination, drain, concurrency, and outcome semantics are verified.

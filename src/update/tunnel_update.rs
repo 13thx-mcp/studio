@@ -15,13 +15,14 @@ use tokio::{sync::Mutex, time::sleep};
 use crate::{
     error::{StudioError, StudioResult},
     realtime::{EventHub, StudioEvent},
+    storage::HistoryHandle,
     tunnel::{TunnelState, TunnelSupervisor},
 };
 
 use super::{
-    ArtifactStager, ComponentCatalog, ComponentId, InventoryService, McpUpdatePhase,
-    McpUpdateTransactionView, OpenAiTunnelReleaseProvider, ReleaseProvider, StagedArtifact,
-    Version,
+    ArtifactHistoryIdentity, ArtifactStager, ComponentCatalog, ComponentId, InventoryService,
+    McpUpdatePhase, McpUpdateTransactionView, OpenAiTunnelReleaseProvider, ReleaseProvider,
+    StagedArtifact, Version,
     transaction::{PreparedStagedIdentity, now_ms, sanitize_transaction_error},
 };
 
@@ -187,6 +188,7 @@ pub struct TunnelUpdateManager {
     active: Arc<StdMutex<bool>>,
     transactions: Arc<Mutex<BTreeMap<String, TunnelTransactionRecord>>>,
     fs_ops: Arc<dyn TunnelFsOps>,
+    history: Option<HistoryHandle>,
 }
 
 impl TunnelUpdateManager {
@@ -195,6 +197,26 @@ impl TunnelUpdateManager {
         tunnel: Arc<TunnelSupervisor>,
         inventory: Arc<InventoryService>,
         events: EventHub,
+    ) -> StudioResult<Self> {
+        Self::new_internal(catalog, tunnel, inventory, events, None)
+    }
+
+    pub fn new_with_history(
+        catalog: ComponentCatalog,
+        tunnel: Arc<TunnelSupervisor>,
+        inventory: Arc<InventoryService>,
+        events: EventHub,
+        history: HistoryHandle,
+    ) -> StudioResult<Self> {
+        Self::new_internal(catalog, tunnel, inventory, events, Some(history))
+    }
+
+    fn new_internal(
+        catalog: ComponentCatalog,
+        tunnel: Arc<TunnelSupervisor>,
+        inventory: Arc<InventoryService>,
+        events: EventHub,
+        history: Option<HistoryHandle>,
     ) -> StudioResult<Self> {
         recover_interrupted_tunnel_files(&catalog)?;
         Ok(Self {
@@ -207,6 +229,7 @@ impl TunnelUpdateManager {
             active: Arc::new(StdMutex::new(false)),
             transactions: Arc::new(Mutex::new(BTreeMap::new())),
             fs_ops: Arc::new(RealTunnelFsOps),
+            history,
         })
     }
 
@@ -230,6 +253,7 @@ impl TunnelUpdateManager {
             active: Arc::new(StdMutex::new(false)),
             transactions: Arc::new(Mutex::new(BTreeMap::new())),
             fs_ops: Arc::new(RealTunnelFsOps),
+            history: None,
         })
     }
 
@@ -453,6 +477,62 @@ impl TunnelUpdateManager {
         }
     }
 
+    async fn remove_recovery_journal_observed(&self, transaction_id: &str) -> StudioResult<()> {
+        let path = journal_path(&self.catalog, transaction_id)?;
+        if !path.exists() {
+            return Ok(());
+        }
+        let journal = load_recovery_journal(&self.catalog, transaction_id)?;
+        if let Some(history) = &self.history {
+            let phase = match journal.phase {
+                TunnelRecoveryPhase::Prepared => "prepared",
+                TunnelRecoveryPhase::ActivationInProgress => "activation_in_progress",
+                TunnelRecoveryPhase::HealthVerifying => "health_verifying",
+                TunnelRecoveryPhase::Committed => "committed",
+                TunnelRecoveryPhase::RollingBack => "rolling_back",
+                TunnelRecoveryPhase::RolledBack => "rolled_back",
+                TunnelRecoveryPhase::RecoveryFailed => "recovery_failed",
+            };
+            match serde_json::to_vec(&journal) {
+                Ok(bytes) => {
+                    let digest = format!("{:x}", Sha256::digest(&bytes));
+                    let history = history.clone();
+                    let history_transaction_id = journal.transaction_id.clone();
+                    let revision = journal.revision;
+                    match tokio::task::spawn_blocking(move || {
+                        history.record_validated_journal(
+                            "tunnel",
+                            &history_transaction_id,
+                            revision,
+                            &digest,
+                            phase,
+                        )
+                    })
+                    .await
+                    {
+                        Ok(Ok(())) => {}
+                        Ok(Err(error)) => tracing::warn!(
+                            transaction_id,
+                            history_error = %error,
+                            "tunnel recovery journal cleanup continues with incomplete history"
+                        ),
+                        Err(error) => tracing::warn!(
+                            transaction_id,
+                            history_error = %error,
+                            "tunnel history receipt task failed; recovery journal cleanup continues"
+                        ),
+                    }
+                }
+                Err(error) => tracing::warn!(
+                    transaction_id,
+                    history_error = %error,
+                    "tunnel history projection serialization failed; recovery journal cleanup continues"
+                ),
+            }
+        }
+        remove_recovery_journal(&self.catalog, transaction_id)
+    }
+
     pub async fn recover_startup(&self) -> StudioResult<()> {
         let _runtime_guard = self
             .catalog
@@ -539,8 +619,9 @@ impl TunnelUpdateManager {
 
             match cleanup_recovery_material(&self.catalog, &journal, committed) {
                 Ok(()) => {
-                    if let Err(error) =
-                        remove_recovery_journal(&self.catalog, &journal.transaction_id)
+                    if let Err(error) = self
+                        .remove_recovery_journal_observed(&journal.transaction_id)
+                        .await
                     {
                         tracing::warn!(
                             %error,
@@ -559,6 +640,18 @@ impl TunnelUpdateManager {
             }
         }
         Ok(())
+    }
+
+    pub(crate) async fn artifact_history_identity(
+        &self,
+        transaction_id: &str,
+    ) -> Option<ArtifactHistoryIdentity> {
+        self.transactions
+            .lock()
+            .await
+            .get(transaction_id)
+            .and_then(|record| record.staged_identity.as_ref())
+            .map(|identity| identity.history_identity(ComponentId::Tunnel))
     }
 
     pub async fn transaction(
@@ -743,7 +836,7 @@ impl TunnelUpdateManager {
                 )
                 .await;
         }
-        if let Err(error) = remove_recovery_journal(&self.catalog, transaction_id) {
+        if let Err(error) = self.remove_recovery_journal_observed(transaction_id).await {
             tracing::warn!(%error, transaction_id, "tunnel committed; recovery journal cleanup deferred");
         }
         self.update_phase(transaction_id, McpUpdatePhase::Completed, None, None)
@@ -939,7 +1032,7 @@ impl TunnelUpdateManager {
         }
         match remove_regular_tree(&rollback) {
             Ok(()) => {
-                if let Err(error) = remove_recovery_journal(&self.catalog, transaction_id) {
+                if let Err(error) = self.remove_recovery_journal_observed(transaction_id).await {
                     tracing::warn!(%error, transaction_id, "tunnel committed; recovery journal cleanup deferred");
                 }
             }
@@ -1059,7 +1152,9 @@ impl TunnelUpdateManager {
                 .await;
         }
         let cleanup_ok = remove_regular_tree(target_release).is_ok();
-        if cleanup_ok && let Err(error) = remove_recovery_journal(&self.catalog, transaction_id) {
+        if cleanup_ok
+            && let Err(error) = self.remove_recovery_journal_observed(transaction_id).await
+        {
             tracing::warn!(%error, transaction_id, "tunnel rollback complete; journal cleanup deferred");
         }
         self.update_phase(
@@ -1183,7 +1278,9 @@ impl TunnelUpdateManager {
                 .await;
         }
         let cleanup_ok = remove_regular_tree(failed).is_ok();
-        if cleanup_ok && let Err(error) = remove_recovery_journal(&self.catalog, transaction_id) {
+        if cleanup_ok
+            && let Err(error) = self.remove_recovery_journal_observed(transaction_id).await
+        {
             tracing::warn!(%error, transaction_id, "tunnel rollback complete; journal cleanup deferred");
         }
         self.update_phase(
@@ -2274,9 +2371,12 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::update::{
-        Architecture, AvailableRelease, HostRuntimeRoots, OperatingSystem, Platform, ReleaseAsset,
-        ReleaseProviderId,
+    use crate::{
+        storage::HistoryHandle,
+        update::{
+            Architecture, AvailableRelease, HostRuntimeRoots, OperatingSystem, Platform,
+            ReleaseAsset, ReleaseProviderId,
+        },
     };
 
     struct NoopProvider;
@@ -2647,6 +2747,79 @@ mod tests {
         assert_eq!(
             fs::read_to_string(root.join("credentials/token")).unwrap(),
             "do-not-touch"
+        );
+    }
+
+    #[tokio::test]
+    async fn tunnel_terminal_receipt_precedes_journal_cleanup() {
+        let mut fixture = fixture(false);
+        let tx = "txn-tunnel-history-order";
+        let staged = create_ready(&fixture.manager, "1.1.0", "ready-history-order", "new");
+        fixture.manager.prepare_candidate(tx, &staged).unwrap();
+        seed_recovery_journal(&fixture.manager, tx, &staged.version, false);
+
+        let runtime_root = fixture.manager.catalog.runtime_root().to_path_buf();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&runtime_root, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+
+        let history = HistoryHandle::initialize(&runtime_root);
+        fixture.manager.history = Some(history.clone());
+        fixture
+            .manager
+            .remove_recovery_journal_observed(tx)
+            .await
+            .unwrap();
+        assert!(!journal_path(&fixture.manager.catalog, tx).unwrap().exists());
+
+        let database = history.root().join("studio.sqlite3");
+        let connection = rusqlite::Connection::open(&database).unwrap();
+        let watermark: i64 = connection
+            .query_row(
+                "SELECT highest_revision FROM journal_watermarks
+                 WHERE domain='tunnel' AND transaction_id=?1",
+                [tx],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(watermark, 1);
+        drop(connection);
+        history.shutdown();
+    }
+
+    #[tokio::test]
+    async fn history_failure_does_not_retain_recovery_journal() {
+        let mut fixture = fixture(false);
+        let tx = "txn-tunnel-history-unavailable";
+        let staged = create_ready(
+            &fixture.manager,
+            "1.1.0",
+            "ready-history-unavailable",
+            "new",
+        );
+        fixture.manager.prepare_candidate(tx, &staged).unwrap();
+        seed_recovery_journal(&fixture.manager, tx, &staged.version, false);
+
+        let runtime_root = fixture.manager.catalog.runtime_root().to_path_buf();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&runtime_root, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let unavailable = HistoryHandle::initialize(&runtime_root);
+        unavailable.shutdown();
+        fixture.manager.history = Some(unavailable);
+
+        fixture
+            .manager
+            .remove_recovery_journal_observed(tx)
+            .await
+            .unwrap();
+        assert!(
+            !journal_path(&fixture.manager.catalog, tx).unwrap().exists(),
+            "audit failure must not retain a recovery-authority journal"
         );
     }
 

@@ -1,0 +1,1620 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import base64
+import hashlib
+import json
+import contextlib
+import fcntl
+import os
+import platform
+import re
+import secrets
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import tomllib
+import urllib.request
+import zipfile
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+FLEET_DIR = Path(__file__).resolve().parents[1]
+FLEET_CONFIG = FLEET_DIR / "fleet.toml"
+
+
+def load_toml(path: Path) -> dict[str, Any]:
+    with path.open("rb") as handle:
+        return tomllib.load(handle)
+
+
+def run(argv: list[str], cwd: Path) -> tuple[int, str, str]:
+    proc = subprocess.run(argv, cwd=cwd, text=True, capture_output=True, check=False)
+    return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+
+
+def component_path(component: dict[str, Any], host: dict[str, Any]) -> Path:
+    return (Path(host["source_root"]) / component["source_dir"]).resolve()
+
+
+def component_install_dir(name: str, component: dict[str, Any], host: dict[str, Any]) -> Path:
+    default_scope = "bin" if component.get("kind") == "git" else "runtime"
+    scope = component.get("install_scope", default_scope)
+    if scope == "bin":
+        return Path(host["bin_root"]).resolve()
+    if scope == "runtime":
+        return Path(host["runtime_root"]).resolve() / component.get("install_dir", name)
+    raise RuntimeError(f"unsupported install_scope for {name}: {scope}")
+
+
+def cargo_version(path: Path) -> str | None:
+    manifest = path / "Cargo.toml"
+    if not manifest.is_file():
+        return None
+    try:
+        return load_toml(manifest).get("package", {}).get("version")
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+
+
+def git_info(path: Path) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "is_git": False,
+        "commit": None,
+        "branch": None,
+        "dirty": None,
+        "remote": None,
+    }
+    code, _, _ = run(["git", "rev-parse", "--is-inside-work-tree"], path)
+    if code != 0:
+        return result
+    result["is_git"] = True
+    code, out, _ = run(["git", "rev-parse", "HEAD"], path)
+    if code == 0:
+        result["commit"] = out
+    code, out, _ = run(["git", "branch", "--show-current"], path)
+    if code == 0:
+        result["branch"] = out or "(detached)"
+    code, out, _ = run(["git", "status", "--porcelain"], path)
+    if code == 0:
+        result["dirty"] = bool(out)
+    code, out, _ = run(["git", "remote", "get-url", "origin"], path)
+    if code == 0:
+        result["remote"] = out
+    return result
+
+
+def parse_semver(text: str) -> tuple[int, int, int] | None:
+    match = re.search(r"(?:^|\s|v)(\d+)\.(\d+)\.(\d+)(?:\s|$)", text)
+    if not match:
+        return None
+    return tuple(int(part) for part in match.groups())
+
+
+def binary_version(binary: Path) -> str | None:
+    if not binary.is_file():
+        return None
+    code, out, _ = run([str(binary), "--version"], binary.parent)
+    if code != 0:
+        return None
+    parsed = parse_semver(out)
+    return ".".join(str(part) for part in parsed) if parsed else None
+
+
+def bundle_info(path: Path, component: dict[str, Any]) -> dict[str, Any]:
+    current = path / "current"
+    binary = (current / component["binary"]) if current.exists() else (path / component["binary"])
+    manifest_path = (current / component["manifest"]) if current.exists() else (path / component["manifest"])
+    info: dict[str, Any] = {
+        "version": binary_version(binary),
+        "release_commit": None,
+        "upstream_cloudflared_version": None,
+    }
+    if manifest_path.is_file():
+        try:
+            data = json.loads(manifest_path.read_text())
+            info["upstream_cloudflared_version"] = data.get("version")
+            info["release_commit"] = data.get("release_commit")
+        except (OSError, json.JSONDecodeError):
+            pass
+    return info
+
+
+def normalize_platform(system: str, machine: str) -> tuple[str, str]:
+    os_name = system.strip().lower()
+    if os_name == "darwin":
+        target_os = "darwin"
+    elif os_name == "linux":
+        target_os = "linux"
+    elif os_name == "windows":
+        target_os = "windows"
+    else:
+        raise RuntimeError(f"unsupported OS: {system}")
+
+    arch_name = machine.strip().lower()
+    if arch_name in {"x86_64", "amd64"}:
+        target_arch = "amd64"
+    elif arch_name in {"arm64", "aarch64"}:
+        target_arch = "arm64"
+    else:
+        raise RuntimeError(f"unsupported architecture: {machine}")
+    return target_os, target_arch
+
+
+def host_platform() -> tuple[str, str]:
+    return normalize_platform(platform.system(), platform.machine())
+
+
+def http_bytes(url: str) -> bytes:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "13thx-mcp-fleetctl",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return response.read()
+
+
+def latest_release(component: dict[str, Any]) -> dict[str, Any]:
+    return json.loads(http_bytes(component["release_api"]))
+
+
+def release_assets(release: dict[str, Any]) -> dict[str, str]:
+    return {asset["name"]: asset["browser_download_url"] for asset in release.get("assets", [])}
+
+
+def expected_checksum(checksums: str, filename: str) -> str:
+    for line in checksums.splitlines():
+        parts = line.strip().split()
+        if len(parts) >= 2 and parts[-1].lstrip("*") == filename:
+            return parts[0].lower()
+    raise RuntimeError(f"checksum entry not found for {filename}")
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def tunnel_release_state(host_name: str) -> dict[str, Any]:
+    fleet = load_toml(FLEET_CONFIG)
+    host = load_toml(FLEET_DIR / "hosts" / f"{host_name}.toml")
+    component = fleet["components"]["tunnel-client"]
+    install_dir = Path(host["runtime_root"]).resolve() / component.get("install_dir", "tunnel-client")
+    info = bundle_info(install_dir, component) if install_dir.is_dir() else {"version": None}
+    release = latest_release(component)
+    tag = release["tag_name"]
+    latest_version = tag.removeprefix("v")
+    target_os, target_arch = host_platform()
+    asset_name = f"{component['asset_prefix']}-v{latest_version}-{target_os}-{target_arch}.zip"
+    assets = release_assets(release)
+    if asset_name not in assets:
+        raise RuntimeError(f"official release {tag} has no asset {asset_name}")
+    if "SHA256SUMS.txt" not in assets:
+        raise RuntimeError(f"official release {tag} has no SHA256SUMS.txt")
+    current_version = info.get("version")
+    current_semver = parse_semver(current_version or "")
+    latest_semver = parse_semver(latest_version)
+    return {
+        "component": component,
+        "install_dir": install_dir,
+        "os": target_os,
+        "arch": target_arch,
+        "current_version": current_version,
+        "latest_version": latest_version,
+        "latest_tag": tag,
+        "asset_name": asset_name,
+        "asset_url": assets[asset_name],
+        "checksums_url": assets["SHA256SUMS.txt"],
+        "up_to_date": current_semver is not None and latest_semver == current_semver,
+        "update_available": current_semver is None or (latest_semver is not None and latest_semver > current_semver),
+    }
+
+
+def tunnel_check(host_name: str) -> int:
+    state = tunnel_release_state(host_name)
+    print(f"host={host_name} os={state['os']} arch={state['arch']}")
+    print(f"installed={state['current_version'] or '-'} latest={state['latest_version']} asset={state['asset_name']}")
+    print("status=up-to-date" if state["up_to_date"] else "status=update-available")
+    return 0
+
+
+def safe_extract_zip(archive: Path, destination: Path) -> None:
+    with zipfile.ZipFile(archive) as bundle:
+        for member in bundle.infolist():
+            member_path = Path(member.filename)
+            if member_path.is_absolute() or ".." in member_path.parts:
+                raise RuntimeError(f"unsafe path in release archive: {member.filename}")
+        bundle.extractall(destination)
+
+
+def tunnel_update(host_name: str, force: bool) -> int:
+    state = tunnel_release_state(host_name)
+    if state["up_to_date"] and not force:
+        print(f"tunnel-client {state['current_version']} is already current")
+        return 0
+    if not state["update_available"] and not force and state["current_version"]:
+        raise RuntimeError(
+            f"installed tunnel-client {state['current_version']} is newer than latest official {state['latest_version']}"
+        )
+
+    install_dir: Path = state["install_dir"]
+    releases_dir = install_dir / "releases"
+    releases_dir.mkdir(parents=True, exist_ok=True)
+    version_dir = releases_dir / f"v{state['latest_version']}"
+
+    with tempfile.TemporaryDirectory(prefix="tunnel-client-update-") as temp_dir_name:
+        temp_dir = Path(temp_dir_name)
+        archive = temp_dir / state["asset_name"]
+        archive.write_bytes(http_bytes(state["asset_url"]))
+        checksum_text = http_bytes(state["checksums_url"]).decode("utf-8")
+        expected = expected_checksum(checksum_text, state["asset_name"])
+        actual = sha256_file(archive)
+        if actual != expected:
+            raise RuntimeError(f"checksum mismatch for {state['asset_name']}: expected {expected}, got {actual}")
+
+        extracted = temp_dir / "extracted"
+        extracted.mkdir()
+        safe_extract_zip(archive, extracted)
+        staged_binary = extracted / state["component"]["binary"]
+        for executable_name in (state["component"]["binary"], "cloudflared"):
+            executable = extracted / executable_name
+            if executable.is_file():
+                executable.chmod(executable.stat().st_mode | 0o111)
+        staged_version = binary_version(staged_binary)
+        if staged_version != state["latest_version"]:
+            raise RuntimeError(
+                f"release binary version mismatch: expected {state['latest_version']}, got {staged_version or 'unknown'}"
+            )
+
+        staged_dir = releases_dir / f".v{state['latest_version']}.{os.getpid()}.tmp"
+        if staged_dir.exists():
+            shutil.rmtree(staged_dir)
+        shutil.copytree(extracted, staged_dir)
+        for executable_name in (state["component"]["binary"], "cloudflared"):
+            executable = staged_dir / executable_name
+            if executable.is_file():
+                executable.chmod(executable.stat().st_mode | 0o111)
+        if version_dir.exists():
+            shutil.rmtree(version_dir)
+        os.replace(staged_dir, version_dir)
+
+    current_link = install_dir / "current"
+    temp_link = install_dir / f".current.{os.getpid()}.tmp"
+    if temp_link.exists() or temp_link.is_symlink():
+        temp_link.unlink()
+    temp_link.symlink_to(Path("releases") / version_dir.name)
+    os.replace(temp_link, current_link)
+    print(
+        f"UPDATED: tunnel-client {state['current_version'] or '-'} -> {state['latest_version']} "
+        f"({state['os']}/{state['arch']}, sha256 verified)"
+    )
+    return 0
+
+
+def collect(host_name: str) -> dict[str, Any]:
+    fleet = load_toml(FLEET_CONFIG)
+    host_path = FLEET_DIR / "hosts" / f"{host_name}.toml"
+    host = load_toml(host_path)
+    bin_root = Path(host["bin_root"]).resolve()
+    runtime_root = Path(host["runtime_root"]).resolve()
+    components: dict[str, Any] = {}
+
+    for name, component in fleet.get("components", {}).items():
+        kind = component["kind"]
+        install_dir = component_install_dir(name, component, host)
+        binary_path = install_dir / component["binary"]
+        if kind == "upstream_release":
+            versioned_binary = install_dir / "current" / component["binary"]
+            binary_path = versioned_binary if versioned_binary.exists() else binary_path
+        entry: dict[str, Any] = {
+            "kind": kind,
+            "required": bool(component.get("required", False)),
+            "repository": component.get("repository"),
+            "install_dir": str(install_dir),
+            "binary_path": str(binary_path),
+            "binary_exists": binary_path.is_file(),
+        }
+        if kind == "git":
+            path = component_path(component, host)
+            entry["path"] = str(path)
+            entry["source_exists"] = path.is_dir()
+            build_output = component.get("build_output")
+            entry["build_output_exists"] = bool(build_output and (path / build_output).is_file())
+            if path.is_dir():
+                entry.update(git_info(path))
+                entry["version"] = cargo_version(path)
+        elif kind == "upstream_release":
+            entry["path"] = str(install_dir)
+            entry["source_exists"] = False
+            if install_dir.is_dir():
+                entry.update(bundle_info(install_dir, component))
+                local_config = component.get("local_config")
+                entry["local_config_exists"] = bool(local_config and (install_dir / local_config).is_file())
+        components[name] = entry
+
+    return {
+        "schema_version": 2,
+        "fleet_name": fleet["fleet_name"],
+        "host_id": host["host_id"],
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source_root": host.get("source_root"),
+        "bin_root": str(bin_root),
+        "runtime_root": str(runtime_root),
+        "policy": fleet.get("policy", {}),
+        "components": components,
+    }
+
+
+def print_status(snapshot: dict[str, Any]) -> None:
+    print(f"fleet={snapshot['fleet_name']} host={snapshot['host_id']}")
+    print(f"{'component':<15} {'kind':<7} {'version':<10} {'commit':<12} {'branch':<14} {'dirty':<6} {'remote':<7} {'binary':<6}")
+    for name, entry in snapshot["components"].items():
+        commit = entry.get("commit")
+        short_commit = commit[:10] if commit else "-"
+        version = entry.get("version") or "-"
+        branch = entry.get("branch") or "-"
+        dirty = "yes" if entry.get("dirty") else ("no" if entry.get("dirty") is False else "-")
+        remote = "yes" if entry.get("remote") else "no"
+        binary = "yes" if entry.get("binary_exists") else "no"
+        print(f"{name:<15} {entry['kind']:<7} {version:<10} {short_commit:<12} {branch:<14} {dirty:<6} {remote:<7} {binary:<6}")
+
+
+def doctor(snapshot: dict[str, Any], require_remotes: bool) -> int:
+    errors: list[str] = []
+    warnings: list[str] = []
+    for name, entry in snapshot["components"].items():
+        if entry["required"] and not entry.get("binary_exists"):
+            errors.append(f"{name}: required runtime binary is missing")
+        if entry["kind"] == "git":
+            if not entry.get("source_exists"):
+                warnings.append(f"{name}: source checkout is absent; runtime-only mode")
+                continue
+            if not entry.get("is_git"):
+                errors.append(f"{name}: source component is not a Git repository")
+            if entry.get("dirty"):
+                warnings.append(f"{name}: working tree is dirty; automatic update must remain blocked")
+            if not entry.get("remote"):
+                message = f"{name}: origin remote is not configured"
+                (errors if require_remotes else warnings).append(message)
+        if entry["kind"] == "upstream_release":
+            if not entry.get("version"):
+                errors.append(f"{name}: installed runtime version could not be read")
+            if not entry.get("local_config_exists"):
+                warnings.append(f"{name}: local config is missing")
+
+    for line in errors:
+        print(f"ERROR: {line}")
+    for line in warnings:
+        print(f"WARN:  {line}")
+    if errors:
+        print(f"doctor: failed with {len(errors)} error(s), {len(warnings)} warning(s)")
+        return 2
+    print(f"doctor: ok with {len(warnings)} warning(s)")
+    return 0
+
+
+def yaml_string(value: str) -> str:
+    return json.dumps(value)
+
+
+def render_server(name: str, server: dict[str, Any], host: dict[str, Any], fleet: dict[str, Any]) -> str:
+    component = fleet["components"][name]
+    command = Path(host["bin_root"]) / component["binary"]
+    args = ["--root", host["workspace_root"]]
+    args.extend(server.get("extra_args", []))
+    lines = [
+        f"name: {name}",
+        f"enabled: {'true' if server.get('enabled', True) else 'false'}",
+        f"command: {yaml_string(str(command))}",
+        "args:",
+    ]
+    lines.extend(f"  - {yaml_string(str(arg))}" for arg in args)
+    env = server.get("env", {})
+    if env:
+        lines.append("env:")
+        for key in sorted(env):
+            lines.append(f"  {key}: {yaml_string(str(env[key]))}")
+    allowlist = server.get("tool_allowlist", [])
+    if allowlist:
+        lines.append("tool_allowlist:")
+        lines.extend(f"  - {item}" for item in allowlist)
+    lines.extend([
+        f"timeout_ms: {int(server.get('timeout_ms', 30000))}",
+        "restart:",
+        "  policy: on-failure",
+        "",
+    ])
+    return "\n".join(lines)
+
+
+def gateway_outputs(host_name: str) -> dict[Path, str]:
+    fleet = load_toml(FLEET_CONFIG)
+    host = load_toml(FLEET_DIR / "hosts" / f"{host_name}.toml")
+    server_dir = (Path(host["runtime_root"]) / host["gateway"]["server_dir"]).resolve()
+    outputs: dict[Path, str] = {}
+    for name in ("filesystem", "git", "exec"):
+        outputs[server_dir / f"{name}.yaml"] = render_server(name, host["servers"][name], host, fleet)
+    return outputs
+
+
+def render_plan_data(host: dict[str, Any], fleet: dict[str, Any]) -> dict[str, Any]:
+    runtime_root = Path(host["runtime_root"]).resolve()
+    outputs: list[dict[str, Any]] = []
+
+    def add(surface: str, destination: Path, content: str, effects: list[str]) -> None:
+        resolved = destination.resolve()
+        try:
+            relative = resolved.relative_to(runtime_root)
+        except ValueError as exc:
+            raise RuntimeError(f"render-plan destination escapes runtime_root: {resolved}") from exc
+        encoded = content.encode("utf-8")
+        outputs.append({
+            "surface": surface,
+            "relative_path": relative.as_posix(),
+            "sha256": hashlib.sha256(encoded).hexdigest(),
+            "content_encoding": "base64",
+            "content_b64": base64.b64encode(encoded).decode("ascii"),
+            "ownership": "fleet_managed",
+            "effects": effects,
+        })
+
+    server_dir = (runtime_root / host["gateway"]["server_dir"]).resolve()
+    for name in ("filesystem", "git", "exec"):
+        add(
+            f"gateway.{name}",
+            server_dir / f"{name}.yaml",
+            render_server(name, host["servers"][name], host, fleet),
+            ["gateway_reload"],
+        )
+
+    add(
+        "studio.config",
+        runtime_root / "studio" / "studio.toml",
+        studio_config_text(host),
+        ["studio_restart"],
+    )
+    add(
+        "tunnel.config",
+        runtime_root / "tunnel-client" / "config.yaml",
+        tunnel_config_text(host),
+        ["tunnel_restart"],
+    )
+
+    outputs.sort(key=lambda item: (item["relative_path"], item["surface"]))
+    return {
+        "schema_version": 1,
+        "host_id": host["host_id"],
+        "runtime_root": str(runtime_root),
+        "outputs": outputs,
+    }
+
+
+def render_plan(host_name: str, json_output: bool) -> int:
+    if not json_output:
+        raise RuntimeError("render-plan currently requires --json")
+    fleet = load_toml(FLEET_CONFIG)
+    host = load_toml(FLEET_DIR / "hosts" / f"{host_name}.toml")
+    print(json.dumps(render_plan_data(host, fleet), sort_keys=True, separators=(",", ":")))
+    return 0
+
+
+def render_gateway(host_name: str, check: bool) -> int:
+    mismatches: list[Path] = []
+    for path, desired in gateway_outputs(host_name).items():
+        current = path.read_text() if path.is_file() else None
+        if current != desired:
+            mismatches.append(path)
+            if not check:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent, text=True)
+                try:
+                    with os.fdopen(fd, "w") as handle:
+                        handle.write(desired)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    os.replace(temp_name, path)
+                finally:
+                    if os.path.exists(temp_name):
+                        os.unlink(temp_name)
+    if check:
+        if mismatches:
+            for path in mismatches:
+                print(f"OUT-OF-SYNC: {path}")
+            return 1
+        print("gateway config: synchronized")
+        return 0
+    if mismatches:
+        for path in mismatches:
+            print(f"UPDATED: {path}")
+    else:
+        print("gateway config: already synchronized")
+    return 0
+
+
+def toml_string(value: str) -> str:
+    return json.dumps(value)
+
+
+def toml_array(values: list[str]) -> str:
+    return "[" + ", ".join(toml_string(value) for value in values) + "]"
+
+
+def studio_config_text(host: dict[str, Any]) -> str:
+    bin_root = Path(host["bin_root"]).resolve()
+    runtime_root = Path(host["runtime_root"]).resolve()
+    workspace_root = host["workspace_root"]
+    lines = [
+        "log_capacity = 500",
+        "stop_timeout_ms = 3000",
+        "",
+        "[server]",
+        f"listen_addr = {toml_string(host.get('studio', {}).get('listen_addr', '127.0.0.1:18100'))}",
+        "",
+        "[registry]",
+        f"path = {toml_string(str(runtime_root / 'studio' / 'data' / 'registry.toml'))}",
+        f"mcp_root = {toml_string(str(bin_root))}",
+        "",
+        "[tunnel]",
+        "name = \"Secure tunnel\"",
+        f"runtime = {toml_string(str(runtime_root / 'tunnel-client' / 'current' / 'tunnel-client-runtime-cloudflared'))}",
+        f"working_dir = {toml_string(str(runtime_root / 'tunnel-client'))}",
+        f"config_file = {toml_string(str(runtime_root / 'tunnel-client' / 'config.yaml'))}",
+        "",
+    ]
+    binary_names = {"filesystem": "rust-mcp-filesystem", "git": "rust-mcp-git", "exec": "rust-mcp-exec"}
+    display_names = {"filesystem": "Filesystem", "git": "Git", "exec": "Exec"}
+    for name in ("filesystem", "git", "exec"):
+        server = host["servers"][name]
+        args = ["--root", workspace_root]
+        args.extend(str(item) for item in server.get("extra_args", []))
+        lines.extend([
+            f"[mcp.{name}]",
+            f"name = {toml_string(display_names[name])}",
+            f"command = {toml_string(str(bin_root / binary_names[name]))}",
+            f"working_dir = {toml_string(str(bin_root))}",
+            f"args = {toml_array(args)}",
+        ])
+        env = server.get("env", {})
+        if env:
+            lines.append(f"[mcp.{name}.env]")
+            for key in sorted(env):
+                lines.append(f"{key} = {toml_string(str(env[key]))}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def render_studio(host_name: str, check: bool) -> int:
+    host = load_toml(FLEET_DIR / "hosts" / f"{host_name}.toml")
+    output = Path(host["runtime_root"]).resolve() / "studio" / "studio.toml"
+    desired = studio_config_text(host)
+    current = output.read_text() if output.is_file() else None
+    if current == desired:
+        print("studio config: synchronized")
+        return 0
+    if check:
+        print(f"OUT-OF-SYNC: {output}")
+        return 1
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=f".{output.name}.", dir=output.parent, text=True)
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(desired)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, output)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
+    print(f"UPDATED: {output}")
+    return 0
+
+
+def tunnel_config_text(host: dict[str, Any]) -> str:
+    bin_root = Path(host["bin_root"]).resolve()
+    runtime_root = Path(host["runtime_root"]).resolve()
+    gateway = bin_root / "rust-mcp-gateway"
+    server_dir = runtime_root / "gateway" / "servers.d"
+    lines = [
+        "config_version: 1", "",
+        "control_plane:", "  base_url: \"https://api.openai.com\"", "  poll_channels:", "    - main", "",
+        "health:", "  listen_addr: \"127.0.0.1:18080\"", "",
+        "admin_ui:", "  open_browser: false", "",
+        "log:", "  level: \"info\"", "  format: \"struct-text\"", "",
+        "mcp:", "  commands:", "    - channel: main",
+        f"      command: \"{gateway} --config-dir {server_dir}\"",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def render_tunnel_config(host_name: str, check: bool) -> int:
+    host = load_toml(FLEET_DIR / "hosts" / f"{host_name}.toml")
+    output = Path(host["runtime_root"]).resolve() / "tunnel-client" / "config.yaml"
+    desired = tunnel_config_text(host)
+    current = output.read_text() if output.is_file() else None
+    if current == desired:
+        print("tunnel config: synchronized")
+        return 0
+    if check:
+        print(f"OUT-OF-SYNC: {output}")
+        return 1
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=f".{output.name}.", dir=output.parent, text=True)
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(desired)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, output)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
+    print(f"UPDATED: {output}")
+    return 0
+
+
+def deploy_control(host_name: str) -> int:
+    host_path = FLEET_DIR / "hosts" / f"{host_name}.toml"
+    host = load_toml(host_path)
+    destination = Path(host["runtime_root"]).resolve() / "fleet"
+    (destination / "scripts").mkdir(parents=True, exist_ok=True)
+    (destination / "hosts").mkdir(parents=True, exist_ok=True)
+    copies = [
+        (FLEET_CONFIG, destination / "fleet.toml"),
+        (Path(__file__).resolve(), destination / "scripts" / "fleetctl.py"),
+        (host_path, destination / "hosts" / host_path.name),
+        (FLEET_DIR / "README.md", destination / "README.md"),
+    ]
+    for source, target in copies:
+        shutil.copy2(source, target)
+    (destination / "scripts" / "fleetctl.py").chmod(0o755)
+    print(f"DEPLOYED: fleet control -> {destination}")
+    return 0
+
+
+def install_component(host_name: str, component_name: str) -> int:
+    fleet = load_toml(FLEET_CONFIG)
+    host = load_toml(FLEET_DIR / "hosts" / f"{host_name}.toml")
+    component = fleet.get("components", {}).get(component_name)
+    if component is None:
+        print(f"fleetctl: unknown component {component_name}", file=sys.stderr)
+        return 2
+    if component.get("kind") != "git":
+        print(f"fleetctl: {component_name} is not a source-built component", file=sys.stderr)
+        return 2
+    source = component_path(component, host) / component["build_output"]
+    if not source.is_file():
+        print(f"fleetctl: build output is missing: {source}", file=sys.stderr)
+        return 2
+    install_dir = component_install_dir(component_name, component, host)
+    install_dir.mkdir(parents=True, exist_ok=True)
+    if component_name == "studio":
+        current = install_dir / "current"
+        if current.exists() or current.is_symlink():
+            print(
+                "fleetctl: Studio source install is bootstrap-only once runtime/studio/current exists",
+                file=sys.stderr,
+            )
+            return 2
+    destination = install_dir / component["binary"]
+    fd, temp_name = tempfile.mkstemp(prefix=f".{destination.name}.", dir=install_dir)
+    os.close(fd)
+    try:
+        shutil.copy2(source, temp_name)
+        os.chmod(temp_name, 0o755)
+        os.replace(temp_name, destination)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
+    print(f"INSTALLED: {component_name} -> {destination}")
+    return 0
+
+
+def snapshot(host_name: str) -> int:
+    data = collect(host_name)
+    out = FLEET_DIR / "state" / f"{host_name}.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    temp = out.with_suffix(".json.tmp")
+    temp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    os.replace(temp, out)
+    print(out)
+    return 0
+
+
+
+SELF_UPDATE_SCHEMA_VERSION = 2
+SELF_UPDATE_SUPPORTED_SCHEMA_VERSIONS = {1, 2}
+SELF_UPDATE_ACTIVATION_PROTOCOL = 2
+SELF_UPDATE_HEALTH_TIMEOUT_SECONDS = 20.0
+SELF_UPDATE_READY_STABILITY_SECONDS = 0.25
+SELF_UPDATE_PARENT_EXIT_TIMEOUT_SECONDS = 15.0
+SELF_UPDATE_POLL_SECONDS = 0.2
+SELF_UPDATE_MAX_FILES = 8192
+SELF_UPDATE_MAX_BYTES = 1024 * 1024 * 1024
+
+
+def safe_self_update_transaction_id(value: str) -> bool:
+    return (
+        value.startswith("txn-studio-")
+        and len(value) <= 128
+        and all(char.isalnum() or char in "-_" for char in value)
+    )
+
+
+def self_update_transaction_path(host: dict[str, Any], transaction_id: str) -> Path:
+    if not safe_self_update_transaction_id(transaction_id):
+        raise RuntimeError("invalid Studio self-update transaction id")
+    runtime_root = Path(host["runtime_root"]).resolve()
+    return runtime_root / "studio" / "data" / "self-update" / f"{transaction_id}.json"
+
+
+def read_regular_json(path: Path) -> dict[str, Any]:
+    if path.is_symlink() or not path.is_file():
+        raise RuntimeError(f"self-update metadata is not a regular file: {path}")
+    return json.loads(path.read_text())
+
+
+def fsync_dir(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def write_json_atomic(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_fd, temp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    try:
+        with os.fdopen(temp_fd, "w") as handle:
+            json.dump(data, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temp_name, 0o600)
+        os.replace(temp_name, path)
+        fsync_dir(path.parent)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
+
+
+def self_update_tree_fingerprint(root: Path) -> str:
+    resolved_root = root.resolve()
+    if root.is_symlink() or not resolved_root.is_dir():
+        raise RuntimeError("Studio self-update release candidate must be a regular directory")
+
+    files: list[tuple[str, str]] = []
+    total = 0
+    for current, dirs, names in os.walk(resolved_root, topdown=True, followlinks=False):
+        current_path = Path(current)
+        for name in list(dirs):
+            path = current_path / name
+            if path.is_symlink():
+                raise RuntimeError("Studio self-update candidate contains a symlink")
+        for name in names:
+            path = current_path / name
+            if path.is_symlink() or not path.is_file():
+                raise RuntimeError("Studio self-update candidate contains an unsafe entry")
+            relative = path.relative_to(resolved_root).as_posix()
+            data = path.read_bytes()
+            total += len(data)
+            if len(files) >= SELF_UPDATE_MAX_FILES or total > SELF_UPDATE_MAX_BYTES:
+                raise RuntimeError("Studio self-update candidate exceeds safety limits")
+            files.append((relative, hashlib.sha256(data).hexdigest()))
+
+    files.sort()
+    digest = hashlib.sha256()
+    for relative, file_digest in files:
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(file_digest.encode("ascii"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def validate_self_update_release(release: Path, version: str, fingerprint: str) -> None:
+    if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+        raise RuntimeError("invalid Studio target version")
+    binary = release / "mcp-studio"
+    web_index = release / "web" / "dist" / "index.html"
+    if binary.is_symlink() or not binary.is_file():
+        raise RuntimeError("Studio target binary is unavailable")
+    if web_index.is_symlink() or not web_index.is_file():
+        raise RuntimeError("Studio target web/dist/index.html is unavailable")
+    actual_version = binary_version(binary)
+    if actual_version != version:
+        raise RuntimeError(
+            f"Studio target binary version mismatch: expected {version}, got {actual_version}"
+        )
+    if self_update_tree_fingerprint(release) != fingerprint:
+        raise RuntimeError("Studio target release fingerprint mismatch")
+
+
+def pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def wait_for_pid_exit(pid: int, timeout_seconds: float) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if not pid_alive(pid):
+            return True
+        time.sleep(SELF_UPDATE_POLL_SECONDS)
+    return not pid_alive(pid)
+
+
+def safe_release_target(studio_root: Path, target: str) -> Path:
+    if not re.fullmatch(r"v\d+\.\d+\.\d+", target):
+        raise RuntimeError("invalid Studio release directory")
+    releases = (studio_root / "releases").resolve()
+    releases.mkdir(parents=True, exist_ok=True)
+    path = releases / target
+    if path.resolve(strict=False).parent != releases:
+        raise RuntimeError("Studio release path escaped releases root")
+    return path
+
+
+def candidate_target(studio_root: Path, transaction_id: str, candidate_name: str) -> Path:
+    expected = f".candidate-{transaction_id}"
+    if candidate_name != expected:
+        raise RuntimeError("Studio candidate directory identity mismatch")
+    releases = (studio_root / "releases").resolve()
+    releases.mkdir(parents=True, exist_ok=True)
+    path = releases / candidate_name
+    if path.resolve(strict=False).parent != releases:
+        raise RuntimeError("Studio candidate path escaped releases root")
+    return path
+
+
+def current_release_target(studio_root: Path) -> str | None:
+    current = studio_root / "current"
+    if not current.exists() and not current.is_symlink():
+        return None
+    if not current.is_symlink():
+        raise RuntimeError("Studio current activation pointer is not a symlink")
+    target = os.readlink(current)
+    path = Path(target)
+    if path.is_absolute() or len(path.parts) != 2 or path.parts[0] != "releases":
+        raise RuntimeError("Studio current activation pointer is unsafe")
+    release_name = path.parts[1]
+    safe_release_target(studio_root, release_name)
+    resolved = (studio_root / path).resolve()
+    releases = (studio_root / "releases").resolve()
+    if resolved.parent != releases or not resolved.is_dir():
+        raise RuntimeError("Studio current release target is unavailable")
+    return release_name
+
+
+def studio_contract() -> dict[str, Any]:
+    return {
+        "activation_protocol": SELF_UPDATE_ACTIVATION_PROTOCOL,
+        "schema_versions": sorted(SELF_UPDATE_SUPPORTED_SCHEMA_VERSIONS),
+        "process_bound_readiness": True,
+        "cross_process_lock": True,
+    }
+
+
+@contextlib.contextmanager
+def studio_activation_lock(studio_root: Path):
+    state_root = studio_root / "data" / "self-update"
+    state_root.mkdir(parents=True, exist_ok=True)
+    lock_path = state_root / ".activation.lock"
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError("Studio activation is already owned by another Fleet launcher") from exc
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(64 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def activation_proof_path(studio_root: Path, transaction_id: str) -> Path:
+    return studio_root / "data" / "self-update" / f"{transaction_id}.ready.json"
+
+
+def clear_activation_proof(studio_root: Path, transaction_id: str) -> None:
+    path = activation_proof_path(studio_root, transaction_id)
+    if not path.exists() and not path.is_symlink():
+        return
+    if path.is_symlink() or not path.is_file():
+        raise RuntimeError("Studio activation proof path is unsafe")
+    path.unlink()
+    fsync_dir(path.parent)
+
+
+def activation_proof_matches(
+    studio_root: Path,
+    transaction_id: str,
+    nonce: str,
+    proc: subprocess.Popen[bytes],
+) -> bool:
+    path = activation_proof_path(studio_root, transaction_id)
+    try:
+        proof = read_regular_json(path)
+        config_path = (studio_root / "studio.toml").resolve()
+        return (
+            proof.get("schema_version") == 1
+            and proof.get("transaction_id") == transaction_id
+            and proof.get("nonce") == nonce
+            and proof.get("pid") == proc.pid
+            and Path(str(proof.get("config_path", ""))).resolve() == config_path
+            and proof.get("config_sha256") == file_sha256(config_path)
+        )
+    except (OSError, RuntimeError, ValueError, json.JSONDecodeError):
+        return False
+
+
+def wait_for_spawned_studio_readiness(
+    studio_root: Path,
+    expected_version: str,
+    proc: subprocess.Popen[bytes],
+    identity_path: Path,
+    expected_fingerprint: str,
+    fingerprint_kind: str,
+    transaction_id: str,
+    activation_nonce: str,
+) -> bool:
+    def identity_matches() -> bool:
+        try:
+            if fingerprint_kind == "release_tree":
+                return self_update_tree_fingerprint(identity_path) == expected_fingerprint
+            if fingerprint_kind == "binary":
+                return file_sha256(identity_path) == expected_fingerprint
+        except (OSError, RuntimeError):
+            return False
+        return False
+
+    deadline = time.monotonic() + SELF_UPDATE_HEALTH_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            return False
+        if (
+            identity_matches()
+            and activation_proof_matches(
+                studio_root, transaction_id, activation_nonce, proc
+            )
+            and studio_health(studio_root, expected_version)
+        ):
+            time.sleep(SELF_UPDATE_READY_STABILITY_SECONDS)
+            return (
+                proc.poll() is None
+                and identity_matches()
+                and activation_proof_matches(
+                    studio_root, transaction_id, activation_nonce, proc
+                )
+                and studio_health(studio_root, expected_version)
+            )
+        time.sleep(SELF_UPDATE_POLL_SECONDS)
+    return (
+        proc.poll() is None
+        and identity_matches()
+        and activation_proof_matches(
+            studio_root, transaction_id, activation_nonce, proc
+        )
+        and studio_health(studio_root, expected_version)
+    )
+
+
+def ensure_current(studio_root: Path, release_name: str, transaction_id: str) -> None:
+    try:
+        atomic_set_current(studio_root, release_name, transaction_id)
+    except OSError:
+        if current_release_target(studio_root) != release_name:
+            raise
+        fsync_dir(studio_root)
+
+
+def atomic_set_current(studio_root: Path, release_name: str, transaction_id: str) -> None:
+    safe_release_target(studio_root, release_name)
+    current = studio_root / "current"
+    if current.exists() and not current.is_symlink():
+        raise RuntimeError("Studio current activation pointer is not a symlink")
+    temp = studio_root / f".current-{transaction_id}.tmp"
+    if temp.exists() or temp.is_symlink():
+        temp.unlink()
+    os.symlink(f"releases/{release_name}", temp)
+    os.replace(temp, current)
+    fsync_dir(studio_root)
+
+
+def clear_current(studio_root: Path) -> None:
+    current = studio_root / "current"
+    if current.is_symlink():
+        current.unlink()
+        fsync_dir(studio_root)
+    elif current.exists():
+        raise RuntimeError("Studio current activation pointer is not a symlink")
+
+
+def studio_listen_url(studio_root: Path) -> str:
+    config_path = studio_root / "studio.toml"
+    config = load_toml(config_path)
+    listen = str(config.get("server", {}).get("listen_addr", "127.0.0.1:18100"))
+    if listen.count(":") != 1:
+        raise RuntimeError("Studio self-update health endpoint requires IPv4 loopback listen_addr")
+    host, port_text = listen.rsplit(":", 1)
+    if host not in {"127.0.0.1", "localhost"}:
+        raise RuntimeError("Studio self-update health endpoint must be loopback")
+    port = int(port_text)
+    if port <= 0 or port > 65535:
+        raise RuntimeError("Studio self-update health port is invalid")
+    return f"http://{host}:{port}/health"
+
+
+def studio_health(studio_root: Path, expected_version: str) -> bool:
+    try:
+        with urllib.request.urlopen(studio_listen_url(studio_root), timeout=1.0) as response:
+            if response.status != 200:
+                return False
+            payload = json.loads(response.read(64 * 1024))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
+    return (
+        payload.get("status") == "ok"
+        and payload.get("service") == "mcp-studio"
+        and payload.get("version") == expected_version
+    )
+
+
+def wait_for_studio_health(studio_root: Path, expected_version: str) -> bool:
+    deadline = time.monotonic() + SELF_UPDATE_HEALTH_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        if studio_health(studio_root, expected_version):
+            return True
+        time.sleep(SELF_UPDATE_POLL_SECONDS)
+    return studio_health(studio_root, expected_version)
+
+
+def minimal_studio_env() -> dict[str, str]:
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"),
+    }
+    for key in ("HOME", "TMPDIR"):
+        value = os.environ.get(key)
+        if value:
+            env[key] = value
+    return env
+
+
+def spawn_studio(
+    studio_root: Path,
+    binary: Path,
+    cwd: Path,
+    transaction_id: str,
+    activation_nonce: str,
+) -> subprocess.Popen[bytes]:
+    config_path = studio_root / "studio.toml"
+    if binary.is_symlink() or not binary.is_file():
+        raise RuntimeError("Studio launch binary is unavailable")
+    env = minimal_studio_env()
+    env["MCP_STUDIO_ACTIVATION_TRANSACTION"] = transaction_id
+    env["MCP_STUDIO_ACTIVATION_NONCE"] = activation_nonce
+    return subprocess.Popen(
+        [str(binary), "--config", str(config_path)],
+        cwd=cwd,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def stop_spawned_process(proc: subprocess.Popen[bytes] | None) -> None:
+    if proc is None or proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=3)
+
+
+def update_self_update_metadata(
+    path: Path,
+    metadata: dict[str, Any],
+    phase: str,
+    *,
+    error: str | None = None,
+    rollback_succeeded: bool | None = None,
+    launcher_owner: str | None = None,
+    launched_pid: int | None = None,
+    launched_release_fingerprint: str | None = None,
+) -> None:
+    current = read_regular_json(path)
+    current_revision = int(current.get("journal_revision", 0))
+    expected_revision = int(metadata.get("journal_revision", 0))
+    if current_revision != expected_revision:
+        raise RuntimeError("stale Studio self-update journal revision")
+    metadata["journal_revision"] = expected_revision + 1
+    metadata["phase"] = phase
+    metadata["error"] = error
+    metadata["rollback_succeeded"] = rollback_succeeded
+    if launcher_owner is not None:
+        metadata["launcher_owner"] = launcher_owner
+    if launched_pid is not None:
+        metadata["launched_pid"] = launched_pid
+    if launched_release_fingerprint is not None:
+        metadata["launched_release_fingerprint"] = launched_release_fingerprint
+    metadata["updated_at_ms"] = int(time.time() * 1000)
+    write_json_atomic(path, metadata)
+
+
+def validate_self_update_metadata(
+    metadata: dict[str, Any],
+    transaction_id: str,
+    parent_pid: int,
+) -> None:
+    schema_version = metadata.get("schema_version")
+    if schema_version not in SELF_UPDATE_SUPPORTED_SCHEMA_VERSIONS:
+        raise RuntimeError("unsupported Studio self-update metadata schema")
+    if schema_version == SELF_UPDATE_SCHEMA_VERSION and metadata.get("launcher_protocol") != SELF_UPDATE_ACTIVATION_PROTOCOL:
+        raise RuntimeError("incompatible Studio/Fleet activation protocol")
+    if metadata.get("transaction_id") != transaction_id:
+        raise RuntimeError("Studio self-update transaction identity mismatch")
+    if metadata.get("component") != "studio":
+        raise RuntimeError("Studio self-update metadata component mismatch")
+    if metadata.get("parent_pid") != parent_pid:
+        raise RuntimeError("Studio self-update parent PID mismatch")
+    if metadata.get("phase") not in {
+        "activation_pending",
+        "external_activating",
+        "external_activated",
+        "rolling_back",
+    }:
+        raise RuntimeError("Studio self-update transaction is not activation-pending")
+
+
+def rollback_studio_release(
+    studio_root: Path,
+    metadata_path: Path,
+    metadata: dict[str, Any],
+    transaction_id: str,
+    previous_layout: str,
+    previous_release: str | None,
+    legacy_binary: Path,
+    source_version: str,
+    reason: str,
+    launcher_owner: str,
+) -> int:
+    update_self_update_metadata(
+        metadata_path,
+        metadata,
+        "rolling_back",
+        error=reason,
+        launcher_owner=launcher_owner,
+    )
+    if previous_layout == "versioned":
+        if previous_release is None:
+            update_self_update_metadata(
+                metadata_path,
+                metadata,
+                "rollback_failed",
+                error="rollback_previous_release_missing",
+                rollback_succeeded=False,
+                launcher_owner=launcher_owner,
+            )
+            return 4
+        ensure_current(studio_root, previous_release, transaction_id)
+        rollback_root = studio_root / "releases" / previous_release
+        rollback_binary = rollback_root / "mcp-studio"
+        rollback_cwd = rollback_root
+        rollback_fingerprint = str(metadata.get("previous_release_fingerprint") or "")
+        if not rollback_fingerprint:
+            rollback_fingerprint = self_update_tree_fingerprint(rollback_root)
+            metadata["previous_release_fingerprint"] = rollback_fingerprint
+        fingerprint_kind = "release_tree"
+        identity_path = rollback_root
+    elif previous_layout == "legacy_flat":
+        try:
+            clear_current(studio_root)
+        except OSError:
+            if current_release_target(studio_root) is not None:
+                raise
+            fsync_dir(studio_root)
+        rollback_binary = legacy_binary
+        rollback_cwd = studio_root
+        rollback_fingerprint = str(metadata.get("previous_release_fingerprint") or "")
+        if not rollback_fingerprint:
+            rollback_fingerprint = file_sha256(rollback_binary)
+            metadata["previous_release_fingerprint"] = rollback_fingerprint
+        fingerprint_kind = "binary"
+        identity_path = rollback_binary
+    else:
+        raise RuntimeError("unsupported Studio rollback layout")
+
+    clear_activation_proof(studio_root, transaction_id)
+    rollback_nonce = secrets.token_hex(32)
+    rollback_proc = spawn_studio(
+        studio_root,
+        rollback_binary,
+        rollback_cwd,
+        transaction_id,
+        rollback_nonce,
+    )
+    update_self_update_metadata(
+        metadata_path,
+        metadata,
+        "rolling_back",
+        error=reason,
+        launcher_owner=launcher_owner,
+        launched_pid=rollback_proc.pid,
+        launched_release_fingerprint=rollback_fingerprint,
+    )
+    if wait_for_spawned_studio_readiness(
+        studio_root,
+        source_version,
+        rollback_proc,
+        identity_path,
+        rollback_fingerprint,
+        fingerprint_kind,
+        transaction_id,
+        rollback_nonce,
+    ):
+        clear_activation_proof(studio_root, transaction_id)
+        update_self_update_metadata(
+            metadata_path,
+            metadata,
+            "rolled_back",
+            error=reason,
+            rollback_succeeded=True,
+            launcher_owner=launcher_owner,
+            launched_pid=rollback_proc.pid,
+            launched_release_fingerprint=rollback_fingerprint,
+        )
+        return 3
+
+    stop_spawned_process(rollback_proc)
+    clear_activation_proof(studio_root, transaction_id)
+    update_self_update_metadata(
+        metadata_path,
+        metadata,
+        "rollback_failed",
+        error="rollback_health_failed",
+        rollback_succeeded=False,
+        launcher_owner=launcher_owner,
+        launched_pid=rollback_proc.pid,
+        launched_release_fingerprint=rollback_fingerprint,
+    )
+    return 4
+
+
+def _studio_activate_locked(host_name: str, transaction_id: str, parent_pid: int) -> int:
+    host = load_toml(FLEET_DIR / "hosts" / f"{host_name}.toml")
+    runtime_root = Path(host["runtime_root"]).resolve()
+    studio_root = runtime_root / "studio"
+    metadata_path = self_update_transaction_path(host, transaction_id)
+    metadata = read_regular_json(metadata_path)
+    validate_self_update_metadata(metadata, transaction_id, parent_pid)
+    launcher_owner = f"fleet:{os.getpid()}:{transaction_id}"
+
+    source_version = str(metadata["source_version"])
+    target_version = str(metadata["target_version"])
+    candidate_name = str(metadata["candidate_dir"])
+    target_release = str(metadata["target_release"])
+    fingerprint = str(metadata["candidate_fingerprint"])
+
+    releases = studio_root / "releases"
+    releases.mkdir(parents=True, exist_ok=True)
+    candidate = candidate_target(studio_root, transaction_id, candidate_name)
+    target = safe_release_target(studio_root, target_release)
+
+    if metadata["phase"] == "activation_pending":
+        if not wait_for_pid_exit(parent_pid, SELF_UPDATE_PARENT_EXIT_TIMEOUT_SECONDS):
+            update_self_update_metadata(
+                metadata_path,
+                metadata,
+                "activation_failed",
+                error="parent_exit_timeout",
+                launcher_owner=launcher_owner,
+            )
+            return 2
+
+    update_self_update_metadata(
+        metadata_path,
+        metadata,
+        "external_activating",
+        launcher_owner=launcher_owner,
+    )
+
+    legacy_binary = studio_root / "mcp-studio"
+    previous_layout = metadata.get("previous_layout")
+    previous_release = metadata.get("previous_release")
+    if previous_layout is None:
+        previous_release = current_release_target(studio_root)
+        if previous_release is not None:
+            previous_layout = "versioned"
+        elif legacy_binary.is_file() and not legacy_binary.is_symlink():
+            previous_layout = "legacy_flat"
+        else:
+            update_self_update_metadata(
+                metadata_path,
+                metadata,
+                "activation_failed",
+                error="previous_release_unavailable",
+            )
+            return 2
+        metadata["previous_layout"] = previous_layout
+        metadata["previous_release"] = previous_release
+        if previous_layout == "versioned" and isinstance(previous_release, str):
+            metadata["previous_release_fingerprint"] = self_update_tree_fingerprint(
+                studio_root / "releases" / previous_release
+            )
+        elif previous_layout == "legacy_flat":
+            metadata["previous_release_fingerprint"] = file_sha256(legacy_binary)
+        update_self_update_metadata(
+            metadata_path,
+            metadata,
+            "external_activating",
+            launcher_owner=launcher_owner,
+        )
+
+    if previous_layout == "versioned":
+        if not isinstance(previous_release, str):
+            update_self_update_metadata(
+                metadata_path,
+                metadata,
+                "activation_failed",
+                error="previous_release_unavailable",
+            )
+            return 2
+        previous_binary = studio_root / "releases" / previous_release / "mcp-studio"
+    elif previous_layout == "legacy_flat":
+        previous_binary = legacy_binary
+    else:
+        update_self_update_metadata(
+            metadata_path,
+            metadata,
+            "activation_failed",
+            error="previous_layout_invalid",
+        )
+        return 2
+
+    if binary_version(previous_binary) != source_version:
+        update_self_update_metadata(
+            metadata_path,
+            metadata,
+            "activation_failed",
+            error="source_version_mismatch",
+        )
+        return 2
+
+    switched = False
+    target_proc: subprocess.Popen[bytes] | None = None
+    try:
+        if target.exists():
+            validate_self_update_release(target, target_version, fingerprint)
+            if candidate.exists():
+                if self_update_tree_fingerprint(candidate) != fingerprint:
+                    raise RuntimeError("Studio candidate fingerprint changed")
+                shutil.rmtree(candidate)
+        else:
+            validate_self_update_release(candidate, target_version, fingerprint)
+            os.replace(candidate, target)
+            fsync_dir(releases)
+
+        ensure_current(studio_root, target_release, transaction_id)
+        switched = True
+
+        clear_activation_proof(studio_root, transaction_id)
+        target_nonce = secrets.token_hex(32)
+        target_proc = spawn_studio(
+            studio_root,
+            target / "mcp-studio",
+            target,
+            transaction_id,
+            target_nonce,
+        )
+        update_self_update_metadata(
+            metadata_path,
+            metadata,
+            "external_activated",
+            launcher_owner=launcher_owner,
+            launched_pid=target_proc.pid,
+            launched_release_fingerprint=fingerprint,
+        )
+        if wait_for_spawned_studio_readiness(
+            studio_root,
+            target_version,
+            target_proc,
+            target,
+            fingerprint,
+            "release_tree",
+            transaction_id,
+            target_nonce,
+        ):
+            clear_activation_proof(studio_root, transaction_id)
+            update_self_update_metadata(
+                metadata_path,
+                metadata,
+                "completed",
+                launcher_owner=launcher_owner,
+                launched_pid=target_proc.pid,
+                launched_release_fingerprint=fingerprint,
+            )
+            return 0
+
+        stop_spawned_process(target_proc)
+        clear_activation_proof(studio_root, transaction_id)
+        return rollback_studio_release(
+            studio_root,
+            metadata_path,
+            metadata,
+            transaction_id,
+            previous_layout,
+            previous_release,
+            legacy_binary,
+            source_version,
+            "target_health_failed",
+            launcher_owner,
+        )
+    except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
+        stop_spawned_process(target_proc)
+        try:
+            clear_activation_proof(studio_root, transaction_id)
+        except (OSError, RuntimeError):
+            pass
+        print(f"fleetctl: Studio activation failed: {exc}", file=sys.stderr)
+        switched = switched or current_release_target(studio_root) == target_release
+        if switched:
+            try:
+                return rollback_studio_release(
+                    studio_root,
+                    metadata_path,
+                    metadata,
+                    transaction_id,
+                    previous_layout,
+                    previous_release,
+                    legacy_binary,
+                    source_version,
+                    "launcher_activation_failed",
+                    launcher_owner,
+                )
+            except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as rollback_exc:
+                update_self_update_metadata(
+                    metadata_path,
+                    metadata,
+                    "rollback_failed",
+                    error="rollback_exception",
+                    rollback_succeeded=False,
+                    launcher_owner=launcher_owner,
+                )
+                print(
+                    f"fleetctl: Studio rollback failed after launcher exception: {rollback_exc}",
+                    file=sys.stderr,
+                )
+                return 4
+        update_self_update_metadata(
+            metadata_path,
+            metadata,
+            "activation_failed",
+            error="launcher_activation_failed",
+            launcher_owner=launcher_owner,
+        )
+        return 2
+
+
+def studio_activate(host_name: str, transaction_id: str, parent_pid: int) -> int:
+    host = load_toml(FLEET_DIR / "hosts" / f"{host_name}.toml")
+    runtime_root = Path(host["runtime_root"]).resolve()
+    studio_root = runtime_root / "studio"
+    with studio_activation_lock(studio_root):
+        return _studio_activate_locked(host_name, transaction_id, parent_pid)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="MCP fleet foundation tool")
+    sub = parser.add_subparsers(dest="command", required=True)
+    for name in ("status", "doctor", "snapshot"):
+        cmd = sub.add_parser(name)
+        cmd.add_argument("--host", required=True)
+    doctor_parser = sub.choices["doctor"]
+    doctor_parser.add_argument("--require-remotes", action="store_true")
+    studio_contract_parser = sub.add_parser("studio-contract")
+    studio_contract_parser.add_argument("--json", action="store_true")
+    studio_activate_parser = sub.add_parser("studio-activate")
+    studio_activate_parser.add_argument("--host", required=True)
+    studio_activate_parser.add_argument("--transaction", required=True)
+    studio_activate_parser.add_argument("--parent-pid", required=True, type=int)
+    render_plan_parser = sub.add_parser("render-plan")
+    render_plan_parser.add_argument("--host", required=True)
+    render_plan_parser.add_argument("--json", action="store_true")
+    render = sub.add_parser("render-gateway")
+    render.add_argument("--host", required=True)
+    render.add_argument("--check", action="store_true")
+    render_studio_parser = sub.add_parser("render-studio")
+    render_studio_parser.add_argument("--host", required=True)
+    render_studio_parser.add_argument("--check", action="store_true")
+    render_tunnel_parser = sub.add_parser("render-tunnel")
+    render_tunnel_parser.add_argument("--host", required=True)
+    render_tunnel_parser.add_argument("--check", action="store_true")
+    deploy_parser = sub.add_parser("deploy-control")
+    deploy_parser.add_argument("--host", required=True)
+    install = sub.add_parser("install")
+    install.add_argument("--host", required=True)
+    install.add_argument("--component", required=True)
+    tunnel_check_parser = sub.add_parser("tunnel-check")
+    tunnel_check_parser.add_argument("--host", required=True)
+    tunnel_update_parser = sub.add_parser("tunnel-update")
+    tunnel_update_parser.add_argument("--host", required=True)
+    tunnel_update_parser.add_argument("--force", action="store_true")
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    try:
+        if args.command == "status":
+            print_status(collect(args.host))
+            return 0
+        if args.command == "doctor":
+            return doctor(collect(args.host), args.require_remotes)
+        if args.command == "snapshot":
+            return snapshot(args.host)
+        if args.command == "studio-contract":
+            if args.json:
+                print(json.dumps(studio_contract(), sort_keys=True))
+            else:
+                print(f"Studio activation protocol v{SELF_UPDATE_ACTIVATION_PROTOCOL}")
+            return 0
+        if args.command == "studio-activate":
+            return studio_activate(args.host, args.transaction, args.parent_pid)
+        if args.command == "render-plan":
+            return render_plan(args.host, args.json)
+        if args.command == "render-gateway":
+            return render_gateway(args.host, args.check)
+        if args.command == "render-studio":
+            return render_studio(args.host, args.check)
+        if args.command == "render-tunnel":
+            return render_tunnel_config(args.host, args.check)
+        if args.command == "deploy-control":
+            return deploy_control(args.host)
+        if args.command == "install":
+            return install_component(args.host, args.component)
+        if args.command == "tunnel-check":
+            return tunnel_check(args.host)
+        if args.command == "tunnel-update":
+            return tunnel_update(args.host, args.force)
+    except (OSError, KeyError, RuntimeError, tomllib.TOMLDecodeError, json.JSONDecodeError) as exc:
+        print(f"fleetctl: {exc}", file=sys.stderr)
+        return 2
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -23,8 +23,9 @@ use crate::{
 };
 
 use super::{
-    ArtifactStager, ComponentCatalog, ComponentId, InventoryService, McpUpdatePhase,
-    McpUpdateTransactionView, ReleaseProvider, StagedArtifact, ThirteenthXReleaseProvider, Version,
+    ArtifactHistoryIdentity, ArtifactStager, ComponentCatalog, ComponentId, InventoryService,
+    McpUpdatePhase, McpUpdateTransactionView, ReleaseProvider, StagedArtifact,
+    ThirteenthXReleaseProvider, Version,
     transaction::{
         PreparedStagedIdentity, activate_binary, now_ms, prepare_rollback,
         remove_rollback_material, restore_rollback, sanitize_transaction_error,
@@ -965,6 +966,18 @@ impl GatewayUpdateManager {
         }
         self.apply_staged(transaction_id, source_version, staged)
             .await
+    }
+
+    pub(crate) async fn artifact_history_identity(
+        &self,
+        transaction_id: &str,
+    ) -> Option<ArtifactHistoryIdentity> {
+        self.transactions
+            .lock()
+            .await
+            .get(transaction_id)
+            .and_then(|record| record.staged_identity.as_ref())
+            .map(|identity| identity.history_identity(ComponentId::Gateway))
     }
 
     pub async fn transaction(

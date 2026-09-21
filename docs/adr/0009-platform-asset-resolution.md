@@ -1,13 +1,13 @@
 # ADR 0009: Strict platform normalization and release asset selection
 
-- Status: Accepted
+- Status: Superseded by Apple-Silicon-only support policy (2026-09-21)
 - Date: 2026-09-17
 
 ## Context
 
 M5.2 and M5.3 provide trusted, typed release metadata for project-owned components and the official OpenAI tunnel runtime. M5.4 must convert the current host identity into one supported runtime platform and select exactly one archive without letting browser input, fuzzy filename matching, or implicit architecture fallbacks influence the result.
 
-Current supported runtime targets are only `darwin-amd64` and `darwin-arm64`. Project MCPs and Studio publish platform-specific tarballs, Fleet publishes one architecture-independent tarball, and tunnel-client publishes platform-specific runtime-cloudflared ZIP archives.
+This ADR originally covered `darwin-amd64` and `darwin-arm64`. Product support is now `darwin-arm64` only; Intel hosts fail closed. Project MCPs and Studio publish platform-specific tarballs, Fleet publishes one architecture-independent tarball, and tunnel-client publishes platform-specific runtime-cloudflared ZIP archives.
 
 ## Decision
 
@@ -15,7 +15,7 @@ Studio adds one transport-free platform and asset-selection layer under `src/upd
 
 - `HostPlatform::detect()` is the production host detector. It uses Rust target identity and delegates to the same normalization functions used by tests.
 - `normalize_os` maps `Darwin`/`darwin` and Rust's `macos` identity to `OperatingSystem::Darwin`.
-- `normalize_arch` maps `x86_64`/`amd64` to `Architecture::Amd64` and `arm64`/`aarch64` to `Architecture::Arm64`.
+- `normalize_arch` maps `arm64`/`aarch64` to `Architecture::Arm64`; Intel aliases and every other architecture fail closed.
 - Any other OS or architecture fails closed with a typed error. Linux is intentionally not claimed as supported by M5.4.
 - `ComponentPolicy` owns a trusted `ReleaseAssetPolicy { stem, kind }` in addition to its repository/install policy.
 - `ReleaseAssetKind` explicitly distinguishes `PlatformTarGz`, `ArchitectureIndependentTarGz`, and `PlatformZip` packaging.

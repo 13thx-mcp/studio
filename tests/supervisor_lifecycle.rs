@@ -13,6 +13,7 @@ use mcp_studio::{
     config::{McpServerConfig, RegistryConfig},
     error::StudioError,
     registry::Registry,
+    storage::HistoryHandle,
     supervisor::{ProcessState, Supervisor},
 };
 
@@ -122,6 +123,97 @@ async fn restart_replaces_process_and_increments_counter() {
     assert_eq!(restarted.restart_count, 1);
 
     supervisor.stop("fixture").await.unwrap();
+}
+
+#[tokio::test]
+async fn mcp_clean_zero_exit_is_not_crash_in_history() {
+    let root = temp_root("history-zero");
+    let project = root.join("fixture");
+    fs::create_dir_all(&project).unwrap();
+    let command = local_script(&project, "exit 0", "fixture-bin");
+    let server = McpServerConfig {
+        name: "fixture".to_owned(),
+        command,
+        args: vec![],
+        working_dir: project,
+        env: BTreeMap::new(),
+    };
+    let registry = Registry::open(
+        Path::new("."),
+        &RegistryConfig {
+            path: root.join("data/registry.toml"),
+            mcp_root: root.clone(),
+        },
+        &BTreeMap::from([("fixture".to_owned(), server)]),
+    )
+    .unwrap();
+    let history = HistoryHandle::initialize(&root.join("history-runtime"));
+    history
+        .start_run(uuid::Uuid::new_v4(), "supervisor-history-test", None)
+        .unwrap();
+    let supervisor =
+        Supervisor::new_with_history(registry, 64, Duration::from_secs(2), history.clone());
+
+    supervisor.start("fixture").await.unwrap();
+    wait_for_state(&supervisor, "fixture", ProcessState::Stopped).await;
+    history.close_run(true).unwrap();
+    history.shutdown();
+
+    let connection =
+        rusqlite::Connection::open(root.join("history-runtime/studio/data/history/studio.sqlite3"))
+            .unwrap();
+    let (end_kind, exit_code, is_crash): (String, Option<i32>, Option<i64>) = connection
+        .query_row(
+            "SELECT end_kind, exit_code, is_crash FROM runtime_sessions LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(end_kind, "clean_exit");
+    assert_eq!(exit_code, Some(0));
+    assert_eq!(is_crash, Some(0));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn shutdown_completes_with_stalled_history() {
+    let root = temp_root("history-stalled-stop");
+    let project = root.join("fixture");
+    fs::create_dir_all(&project).unwrap();
+    let command = local_script(&project, "exec /bin/sleep 30", "fixture-bin");
+    let server = McpServerConfig {
+        name: "fixture".to_owned(),
+        command,
+        args: vec![],
+        working_dir: project,
+        env: BTreeMap::new(),
+    };
+    let registry = Registry::open(
+        Path::new("."),
+        &RegistryConfig {
+            path: root.join("data/registry.toml"),
+            mcp_root: root.clone(),
+        },
+        &BTreeMap::from([("fixture".to_owned(), server)]),
+    )
+    .unwrap();
+    let history = HistoryHandle::initialize(&root.join("history-runtime"));
+    history
+        .start_run(uuid::Uuid::new_v4(), "stalled-history-stop", None)
+        .unwrap();
+    let supervisor =
+        Supervisor::new_with_history(registry, 64, Duration::from_secs(2), history.clone());
+
+    assert_eq!(
+        supervisor.start("fixture").await.unwrap().state,
+        ProcessState::Running
+    );
+    history.shutdown();
+
+    let stopped = supervisor.stop("fixture").await.unwrap();
+    assert_eq!(stopped.state, ProcessState::Stopped);
+    assert!(stopped.pid.is_none());
+    let _ = fs::remove_dir_all(root);
 }
 
 #[tokio::test]

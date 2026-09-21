@@ -26,6 +26,7 @@ import {
 import { connectRealtime, type ConnectionState } from "./realtime";
 import { actionEnabled, formatLogMessage, formatUptime, mergeLogEntries } from "./state";
 import UpdatesPanel from "./UpdatesPanel";
+import HistoryPanel from "./HistoryPanel";
 import { persistPendingTransaction, readPendingTransactions } from "./updates-state";
 import type {
   DiscoveredProject,
@@ -57,6 +58,7 @@ export default function App() {
   const [reconciliation, setReconciliation] = useState<ReconciliationView | null>(null);
   const [updateTransactions, setUpdateTransactions] = useState<Partial<Record<UpdateComponent, UpdateTransaction>>>({});
   const [connection, setConnection] = useState<ConnectionState>("connecting");
+  const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [logFilter, setLogFilter] = useState<LogFilter>("all");
@@ -148,7 +150,12 @@ export default function App() {
       setReconciliation(event.status);
       return;
     }
+    if (event.type === "history_committed" || event.type === "history_health") {
+      setHistoryRefreshKey((current) => current + 1);
+      return;
+    }
     if (event.type === "resync_required") {
+      setHistoryRefreshKey((current) => current + 1);
       void refreshAll();
     }
   };
@@ -451,6 +458,8 @@ export default function App() {
         onCheckReconciliation={runReconciliationCheck}
         onApplyReconciliation={runReconciliationApply}
       />
+
+      <HistoryPanel refreshKey={historyRefreshKey} />
 
       <section className="detail-panel tunnel-panel" aria-label="Secure tunnel">
         <div className="detail-header"><div><p className="eyebrow">Secure tunnel</p><h2>{tunnel?.name ?? "Tunnel"}</h2></div>{tunnel && <span className={`state state-${tunnel.state}`}>{tunnel.state}</span>}</div>

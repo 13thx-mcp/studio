@@ -27,14 +27,11 @@ def main() -> int:
     if platform.system() != "Darwin":
         raise SystemExit("native Studio package verification requires a Darwin host")
 
-    machine = platform.machine()
-    platform_name = {
-        "arm64": "darwin-arm64",
-        "aarch64": "darwin-arm64",
-        "x86_64": "darwin-amd64",
-    }.get(machine)
-    if platform_name is None:
-        raise SystemExit(f"unsupported native Darwin machine: {machine}")
+    runner_machine = platform.machine()
+    if runner_machine != "arm64":
+        raise SystemExit(
+            f"native Studio package verification requires an arm64 runner, got {runner_machine}"
+        )
 
     with (ROOT / "Cargo.toml").open("rb") as handle:
         version = tomllib.load(handle)["package"]["version"]
@@ -55,6 +52,25 @@ def main() -> int:
         raise SystemExit(f"release binary missing: {binary}")
     if not (web_dist / "index.html").is_file():
         raise SystemExit("web/dist/index.html missing")
+
+    file_probe = subprocess.run(
+        ["file", str(binary)],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+    if file_probe.returncode != 0:
+        raise SystemExit(f"could not inspect release binary architecture: {file_probe.stderr}")
+    description = file_probe.stdout.lower()
+    if "arm64" in description:
+        binary_machine = "arm64"
+        platform_name = "darwin-arm64"
+    else:
+        raise SystemExit(
+            "release binary is not a native arm64 Mach-O: "
+            f"{file_probe.stdout.strip()}"
+        )
 
     name = f"mcp-studio-v{version}-{platform_name}"
     package_root = output / name
@@ -96,14 +112,14 @@ def main() -> int:
     manifest = {
         "version": version,
         "platform": platform_name,
-        "native_machine": machine,
+        "native_machine": binary_machine,
+        "runner_process_machine": runner_machine,
         "archive": archive.name,
         "archive_sha256": sha256(archive),
         "backend_sha256": sha256(package_root / "mcp-studio"),
         "web_index_sha256": sha256(package_root / "web" / "dist" / "index.html"),
         "native_architecture_covered": platform_name,
-        "cross_architecture_release_qualified": False,
-        "note": "This proves only the current native Darwin architecture. The other Darwin architecture requires its own native runner.",
+        "note": "Product support is darwin-arm64 only.",
     }
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(json.dumps(manifest, sort_keys=True))
