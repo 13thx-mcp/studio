@@ -1,6 +1,6 @@
 # Historical API and UI contracts
 
-**Status:** proposed M6.0 contract, implemented incrementally in M6.2/M6.7. Existing live APIs remain owner-backed. Historical DTOs never deserialize into action requests.
+**Status:** accepted M6 contract, implemented and verified through M6.2/M6.7. Existing live APIs remain owner-backed. Historical DTOs never deserialize into action requests.
 
 ## 1. Endpoints
 

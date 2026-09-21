@@ -1,6 +1,6 @@
 # M6 common contracts — proposed normative freeze
 
-**Status:** proposed for M6.0 acceptance; implementation NOT STARTED. Baseline and caveats: [SOURCE-AUDIT](SOURCE-AUDIT.md).
+**Status:** M6.0 contract **accepted and implemented**; this document preserves the frozen common contract. Baseline and caveats: [SOURCE-AUDIT](SOURCE-AUDIT.md).
 
 ## 1. Scope and vocabulary
 

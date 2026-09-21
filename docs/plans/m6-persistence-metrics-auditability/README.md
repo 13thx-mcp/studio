@@ -1,16 +1,16 @@
 # Mission 6 — Persistence, Metrics & Auditability
 
-**State:** architecture frozen; production implementation substantially complete; local qualification green; final VERIFIED closure BLOCKED only by the independent M5 publication/native-package gate after clean-source qualification; M6 native support is darwin-arm64 only.
+**State:** **VERIFIED / CLOSED**. M6 native support is darwin-arm64 only; full clean-source qualification consumed independently qualified M5 publication evidence.
 **Planning source baseline:** Studio `main`, `6a6122abb41591f22874fb439eb8427edd649e53`.
-**Implementation worktree:** `feature/m6`, uncommitted as of 2026-09-20. **Roadmap target:** `v0.6.0-alpha` (not a version change authorization).
+**Closure baseline:** M6 merged to `main` and released locally at `e10ee57b6c1629744e45ad7eda63cebf368b7504`, tagged `v0.6.0-alpha`. Remote tag push/publication remain separate release actions.
 
 ## Purpose and boundaries
 
 Persist operational/update history, audit evidence and useful lifecycle metrics across Studio restarts, while explaining the observed artifact/configuration lineage. SQLite is a history authority, never a substitute for live owners or recovery journals. Retention boundaries, interrupted observations and unavailable evidence remain explicit.
 
-This package began as a read-only audit of the Studio repository and remains the normative M6 contract. It has now been implemented against the current `feature/m6` worktree. Historical line references still describe the planning baseline; current implementation truth is the source plus [milestone status](../../milestone-6-status.md) and [verification matrix](M6-VERIFICATION-MATRIX.md). Real production credentials/runtime were not used as destructive fixtures.
+This package began as a read-only audit of the Studio repository and remains the normative M6 contract. It was implemented on the M6 integration branch and is now merged into the closed `main` baseline. Historical line references still describe the planning baseline; current implementation truth is the source plus [milestone status](../../milestone-6-status.md) and [verification matrix](M6-VERIFICATION-MATRIX.md). Real production credentials/runtime were not used as destructive fixtures.
 
-M5 is **locally closed/tagged, publication qualification blocked**. Its publication gate remains independent. M6 local implementation/testing does not satisfy or weaken that gate. Native/package qualification that depends on M5 evidence must consume a real qualified `M5_RESULT_DIR`; missing evidence is BLOCKED, never synthesized.
+M5 is **PUBLICATION QUALIFIED**. M6 closure consumed real independently qualified `M5_RESULT_DIR` evidence; the runner continues to fail closed if that evidence is missing or invalid.
 
 ## Read order / implementation entry point
 
@@ -53,4 +53,4 @@ The common documents are the proposed normative contract; package plans speciali
 | M6.7 | Bounded history APIs, commit invalidation, historical UI | M6.6 |
 | M6.8 | Native/restart/source-less/security/full qualification, closure | M6.7 |
 
-Production M6 code and tests are now present in the uncommitted `feature/m6` worktree. [Planning validation](PLANNING-VALIDATION.md) remains historical design evidence; it is not production qualification. Current implementation/qualification truth is recorded separately in [milestone status](../../milestone-6-status.md) and the matrix. No version/tag/push/release/deployment is implied.
+Production M6 code and tests are merged and qualified. [Planning validation](PLANNING-VALIDATION.md) remains historical design evidence; production qualification truth is recorded in [milestone status](../../milestone-6-status.md), [M6.8 closure](M6.8-verification-closure.md), and the verification matrix. Tag push/publication/deployment remain separate release actions.

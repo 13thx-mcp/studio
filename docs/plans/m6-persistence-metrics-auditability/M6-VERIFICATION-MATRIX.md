@@ -1,6 +1,6 @@
 # M6 requirement → implementation → test → evidence matrix
 
-**Current execution state (2026-09-21):** M6 is verified on `feature/m6`. Full clean-source qualification passed on native darwin-arm64 and consumed independently qualified M5 publication evidence.
+**Final execution state (2026-09-21):** M6 is **VERIFIED / CLOSED** and merged to `main` at `e10ee57b6c1629744e45ad7eda63cebf368b7504`. Full clean-source qualification passed on native darwin-arm64 and consumed independently qualified M5 publication evidence.
 
 **Final local evidence target:** `.tmp/m6-history/final-review/summary.json` and `.tmp/m6-history/final-review/manifest.json`. This path is intentionally bound in documentation before the final rerun so the evidence can be generated after the last tracked source/doc change without editing the tested source afterward.
 

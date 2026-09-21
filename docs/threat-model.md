@@ -2,9 +2,9 @@
 
 ## Scope
 
-MCP Studio is a privileged local control plane. As of Milestone 5.10 it can supervise registered MCP child processes, manage one secure tunnel runtime, persist MCP registration/configuration locally, discover/select/stage trusted releases, expose runtime inventory/drift, transactionally update generic flat Rust MCP binaries and Gateway, update Fleet, reconcile generated runtime config, and hand Studio self-update activation to a constrained external Fleet launcher. Tunnel runtime update remains later M5 scope.
+MCP Studio is a privileged local control plane. As of the closed Milestone 6 baseline it can supervise registered MCP child processes, manage and transactionally update the secure tunnel runtime, persist MCP registration/configuration locally, discover/select/stage trusted releases, expose runtime inventory/drift, transactionally update generic flat Rust MCP binaries, Gateway and Fleet, reconcile generated runtime config, hand Studio self-update activation to a constrained external Fleet launcher, and persist bounded operational/audit/history evidence in SQLite.
 
-SQLite history/metrics/audit persistence, automatic restart/backoff, remote authentication/RBAC, and MCP gateway traffic telemetry remain later milestones.
+Automatic restart/backoff, remote authentication/RBAC, and Gateway-observed MCP request/usage telemetry remain later milestones. M6 SQLite history/metrics/audit persistence is implemented and remains non-authoritative for live control/recovery.
 
 ## Assets
 
@@ -267,7 +267,7 @@ SQLite history/metrics/audit persistence, automatic restart/backoff, remote auth
 - startup restores journaled uncommitted activation idempotently. Corrupt journals, unsafe journal paths, multiple recovery journals, and journal-less candidate/rollback/failed scratch fail closed and are preserved for operator repair.
 - official-network closure smoke staged and force-reinstalled OpenAI `v0.0.14` in an isolated runtime while preserving config/credentials.
 
-**Residual risk:** historical update persistence and retained-release garbage-collection policy remain later-milestone concerns. M5 keeps only transaction-local rollback material needed for safe activation and does not enable unattended Tunnel updates.
+**Residual risk:** M6 now persists bounded update/audit lineage, but retained-release garbage-collection policy remains a later operational concern. Transaction-local rollback material remains authoritative for recovery, and unattended Tunnel updates are still disabled.
 
 ### Updates/Fleet browser authority and reconnect state
 
@@ -287,7 +287,7 @@ SQLite history/metrics/audit persistence, automatic restart/backoff, remote auth
 - sanitized backend error categories are mapped to operator-facing messages without reflecting internal request metadata;
 - release checks run concurrently only over the closed server-owned component catalog/provider map, preserving the same trust/error policy.
 
-**Residual risk:** browser local storage is convenience state, not update authority or durable audit history. A cleared browser store can lose automatic UI refetch hints, but server-owned durable Studio self-update state and live transaction APIs remain authoritative. Persisted historical/audit views belong to M6.
+**Residual risk:** browser local storage is convenience state, not update authority. A cleared browser store can lose automatic UI refetch hints, while server-owned durable Studio self-update state, live transaction APIs, and M6 historical/audit views remain available. Historical state still cannot authorize or resume a live update.
 ### Studio self-update activation ownership / rollback
 
 **Risk:** Studio replaces its own executable in-process, a browser selects activation authority, backend and dashboard assets are activated from different releases, a candidate changes after verification, an unsafe current pointer escapes the runtime root, or failure after switching leaves Studio unable to recover.
@@ -321,7 +321,7 @@ SQLite history/metrics/audit persistence, automatic restart/backoff, remote auth
 - Latest release checks use the existing trusted provider mapping and keep a process-local check timestamp/result.
 - Public inventory projections intentionally exclude internal path/repository authority and sanitize check errors.
 
-**Residual risk:** M5.6 process-local inventory/check cache is not persisted and running identity is incomplete for MCP/tunnel processes until transactional lifecycle code captures stronger artifact identity. Persisted audit/history belongs to M6; M5.7 owns transaction-time state transitions.
+**Residual risk:** release-check freshness remains process-local live state and cannot be reconstructed as current authority from M6 history. M6 records observed inventory/artifact lineage, while transactional lifecycle owners remain authoritative for current installed/running identity.
 
 ### Version confusion and downgrade/replay
 
@@ -333,7 +333,7 @@ SQLite history/metrics/audit persistence, automatic restart/backoff, remote auth
 - Installed, running, desired, and latest version dimensions are modeled separately.
 - Drift precedence is deterministic and unit-tested.
 
-**Residual risk:** downgrade authorization, release freshness/replay policy, and persisted update history belong to later M5/M6 work.
+**Residual risk:** M6 provides persisted update history, but downgrade authorization and stronger release freshness/replay policy remain separate policy concerns and must not be inferred from historical records.
 
 ### Malicious project manifest / discovery-triggered execution
 
@@ -523,6 +523,7 @@ SQLite history/metrics/audit persistence, automatic restart/backoff, remote auth
 Tunnel management remains governed by ADR 0003/M3 controls:
 
 - fixed server-side invocation shape;
+- reserved runtime authority environment keys (`MCP_COMMAND`, `MCP_SERVER_URL`, `CONTROL_PLANE_POLL_CHANNELS`) are rejected from `[tunnel.env]` and removed after explicit child environment application;
 - tunnel runtime/config confinement;
 - server-side secret references;
 - exact-secret/common-field log redaction;

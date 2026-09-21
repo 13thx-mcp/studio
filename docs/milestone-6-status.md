@@ -3,7 +3,7 @@
 - Target/package version: `v0.6.0-alpha`.
 - Status: **VERIFIED / CLOSED**.
 - Planning baseline: Studio `main` at `6a6122abb41591f22874fb439eb8427edd649e53`.
-- Implementation worktree: `feature/m6`, based on pre-implementation HEAD `026753ba3737e6d04b71973240f77d15879b79e3`; prepared as the `v0.6.0-alpha` closure candidate.
+- Closure baseline: merged `main` at `e10ee57b6c1629744e45ad7eda63cebf368b7504`, with local annotated tag `v0.6.0-alpha`. The pre-implementation M6 branch was based on `026753ba3737e6d04b71973240f77d15879b79e3`.
 - Local review date: 2026-09-21.
 - Planning/contract source: [M6 implementation plan](plans/m6-persistence-metrics-auditability/README.md).
 - Release dependency: **M5 PUBLICATION QUALIFIED** by independent evidence. M6 consumed that evidence during full qualification.
@@ -71,4 +71,4 @@ Current-host evidence now includes real disposable filesystem ENOSPC and read-on
 
 **Implementation:** verified.
 **M6 VERIFIED closure:** **CLOSED**.
-**Release:** package version is `v0.6.0-alpha`; tagging/publishing remains a separate authorized action.
+**Release:** package version is `v0.6.0-alpha` and the local tag exists. Remote tag push and release publication remain separate authorized actions.
