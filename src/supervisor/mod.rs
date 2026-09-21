@@ -17,6 +17,7 @@ use crate::{
     error::{StudioError, StudioResult},
     realtime::{EventHub, StudioEvent},
     registry::{RegisteredMcp, Registry},
+    storage::{HistoryHandle, LifecycleEndKind, LifecycleOwnerKind, LifecycleSessionContext},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -70,6 +71,7 @@ struct RuntimeState {
     logs: VecDeque<LogEntry>,
     next_log_sequence: u64,
     generation: u64,
+    history_session: Option<LifecycleSessionContext>,
 }
 
 impl Default for RuntimeState {
@@ -85,6 +87,7 @@ impl Default for RuntimeState {
             logs: VecDeque::new(),
             next_log_sequence: 1,
             generation: 0,
+            history_session: None,
         }
     }
 }
@@ -132,16 +135,36 @@ pub struct Supervisor {
     events: EventHub,
     log_capacity: usize,
     stop_timeout: Duration,
+    history: Option<HistoryHandle>,
 }
 
 impl Supervisor {
     pub fn new(registry: Registry, log_capacity: usize, stop_timeout: Duration) -> Self {
+        Self::new_internal(registry, log_capacity, stop_timeout, None)
+    }
+
+    pub fn new_with_history(
+        registry: Registry,
+        log_capacity: usize,
+        stop_timeout: Duration,
+        history: HistoryHandle,
+    ) -> Self {
+        Self::new_internal(registry, log_capacity, stop_timeout, Some(history))
+    }
+
+    fn new_internal(
+        registry: Registry,
+        log_capacity: usize,
+        stop_timeout: Duration,
+        history: Option<HistoryHandle>,
+    ) -> Self {
         Self {
             registry,
             runtimes: Arc::new(RwLock::new(BTreeMap::new())),
             events: EventHub::default(),
             log_capacity,
             stop_timeout,
+            history,
         }
     }
 
@@ -256,6 +279,9 @@ impl Supervisor {
                 };
                 self.publish_log(id, log_entry);
                 self.publish_status(id, failed_status);
+                if let Some(history) = &self.history {
+                    history.observe_start_failed(LifecycleOwnerKind::Mcp, generation);
+                }
                 Err(error)
             }
         }
@@ -407,6 +433,9 @@ impl Supervisor {
         let stdin = child.stdin.take();
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
+        let history_session = self.history.as_ref().and_then(|history| {
+            history.observe_session_started(LifecycleOwnerKind::Mcp, generation, pid)
+        });
 
         let (running_status, started_log) = {
             let mut state = runtime.lock().await;
@@ -420,6 +449,7 @@ impl Supervisor {
             state.started_at = Some(Instant::now());
             state.last_exit_code = None;
             state.last_error = None;
+            state.history_session = history_session.clone();
             let entry = state.push_log(
                 self.log_capacity,
                 LogStream::Studio,
@@ -429,6 +459,24 @@ impl Supervisor {
         };
         self.publish_log(id, started_log);
         self.publish_status(id, running_status);
+
+        if let (Some(history), Some(context)) = (self.history.clone(), history_session) {
+            let heartbeat_runtime = runtime.clone();
+            tokio::spawn(async move {
+                loop {
+                    sleep(Duration::from_secs(15)).await;
+                    let active = {
+                        let state = heartbeat_runtime.lock().await;
+                        state.generation == generation
+                            && matches!(state.state, ProcessState::Running | ProcessState::Stopping)
+                    };
+                    if !active {
+                        break;
+                    }
+                    history.observe_session_heartbeat(&context);
+                }
+            });
+        }
 
         if let Some(stdout) = stdout {
             spawn_log_reader(
@@ -455,42 +503,81 @@ impl Supervisor {
         let name_owned = config.name.clone();
         let capacity = self.log_capacity;
         let events = self.events.clone();
+        let history = self.history.clone();
         tokio::spawn(async move {
             let _stdin_guard = stdin;
             let result = child.wait().await;
-            let (status, log_entry) = {
+            let (status, log_entry, terminal) = {
                 let mut state = runtime.lock().await;
                 if state.generation != generation {
                     return;
                 }
 
                 let was_stopping = state.state == ProcessState::Stopping;
+                let exact_duration = state.started_at.map(|started| started.elapsed());
+                let history_session = state.history_session.take();
                 state.pid = None;
                 state.started_at = None;
 
-                let message = match result {
+                let (message, end_kind, exit_code, is_crash) = match result {
                     Ok(exit) => {
-                        state.last_exit_code = exit.code();
-                        if was_stopping || exit.success() {
+                        let exit_code = exit.code();
+                        state.last_exit_code = exit_code;
+                        if was_stopping {
                             state.state = ProcessState::Stopped;
                             state.last_error = None;
+                            (
+                                format!("process exited: {exit}"),
+                                LifecycleEndKind::RequestedStop,
+                                exit_code,
+                                false,
+                            )
+                        } else if exit.success() {
+                            state.state = ProcessState::Stopped;
+                            state.last_error = None;
+                            (
+                                format!("process exited: {exit}"),
+                                LifecycleEndKind::CleanExit,
+                                exit_code,
+                                false,
+                            )
                         } else {
                             state.state = ProcessState::Failed;
                             state.crash_count = state.crash_count.saturating_add(1);
                             state.last_error = Some(format!("process exited with status {exit}"));
+                            (
+                                format!("process exited: {exit}"),
+                                LifecycleEndKind::UnexpectedExit,
+                                exit_code,
+                                true,
+                            )
                         }
-                        format!("process exited: {exit}")
                     }
                     Err(error) => {
                         state.state = ProcessState::Failed;
                         state.crash_count = state.crash_count.saturating_add(1);
                         state.last_error = Some(format!("failed waiting for process: {error}"));
-                        format!("wait failed: {error}")
+                        (
+                            format!("wait failed: {error}"),
+                            LifecycleEndKind::WaitError,
+                            None,
+                            true,
+                        )
                     }
                 };
                 let entry = state.push_log(capacity, LogStream::Studio, message);
-                (state.status(&id_owned, &name_owned), entry)
+                (
+                    state.status(&id_owned, &name_owned),
+                    entry,
+                    history_session
+                        .map(|context| (context, end_kind, exit_code, is_crash, exact_duration)),
+                )
             };
+            if let (Some(history), Some((context, end_kind, exit_code, is_crash, duration))) =
+                (history.as_ref(), terminal)
+            {
+                history.observe_session_terminal(context, end_kind, exit_code, is_crash, duration);
+            }
             events.publish(StudioEvent::Log {
                 mcp_id: id_owned.clone(),
                 entry: log_entry,

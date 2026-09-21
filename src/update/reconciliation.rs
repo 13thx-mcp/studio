@@ -2524,7 +2524,7 @@ tool_allowlist = []
             InventoryService::new(
                 catalog.clone(),
                 root.join("missing-source"),
-                HostPlatform::from_raw("Darwin", "x86_64")
+                HostPlatform::from_raw("Darwin", "arm64")
                     .unwrap()
                     .platform(),
                 BTreeMap::new(),

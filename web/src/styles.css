@@ -147,3 +147,67 @@ button, select, input { font: inherit; }
   .fleet-summary-grid, .reconciliation-grid, .version-grid { grid-template-columns: 1fr; }
   .transaction-heading, .transaction-meta { flex-direction: column; }
 }
+
+
+.history-panel {
+  margin-top: 1rem;
+}
+
+.history-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 30rem), 1fr));
+}
+
+.history-card {
+  min-width: 0;
+  border: 1px solid var(--border, #d8dee8);
+  border-radius: 0.75rem;
+  padding: 1rem;
+  background: var(--panel, #fff);
+}
+
+.history-warning {
+  padding: 0.75rem;
+  border: 1px solid currentColor;
+  border-radius: 0.5rem;
+}
+
+.history-note {
+  font-size: 0.875rem;
+  opacity: 0.75;
+}
+
+.history-table-wrap {
+  overflow-x: auto;
+}
+
+.history-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.history-table th,
+.history-table td {
+  padding: 0.5rem;
+  border-bottom: 1px solid var(--border, #d8dee8);
+  text-align: left;
+  vertical-align: top;
+}
+
+.history-chart {
+  width: 100%;
+  min-height: 8rem;
+  overflow: visible;
+}
+
+.history-chart rect {
+  fill: currentColor;
+  opacity: 0.35;
+}
+
+.history-chart text {
+  fill: currentColor;
+  font-size: 12px;
+}

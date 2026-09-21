@@ -84,9 +84,36 @@ pub struct McpUpdateTransactionView {
 pub(crate) struct PreparedStagedIdentity {
     version: Version,
     provider: ReleaseProviderId,
+    platform: super::Platform,
     asset_name: String,
     archive_sha256: String,
     executable_sha256: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ArtifactHistoryIdentity {
+    pub component: ComponentId,
+    pub version: String,
+    pub provider_code: &'static str,
+    pub platform_code: String,
+    pub archive_sha256: String,
+    pub member_sha256: Vec<String>,
+}
+
+impl PreparedStagedIdentity {
+    pub(crate) fn history_identity(&self, component: ComponentId) -> ArtifactHistoryIdentity {
+        ArtifactHistoryIdentity {
+            component,
+            version: self.version.to_string(),
+            provider_code: match self.provider {
+                ReleaseProviderId::ThirteenthXGitHub => "github_13thx",
+                ReleaseProviderId::OpenAiGitHub => "github_openai",
+            },
+            platform_code: self.platform.to_string(),
+            archive_sha256: self.archive_sha256.clone(),
+            member_sha256: self.executable_sha256.clone(),
+        }
+    }
 }
 
 impl From<&StagedArtifact> for PreparedStagedIdentity {
@@ -94,6 +121,7 @@ impl From<&StagedArtifact> for PreparedStagedIdentity {
         Self {
             version: staged.version.clone(),
             provider: staged.provider,
+            platform: staged.platform,
             asset_name: staged.asset_name.clone(),
             archive_sha256: staged.archive_sha256.clone(),
             executable_sha256: staged.validated_executable_sha256.clone(),
@@ -432,12 +460,29 @@ impl McpUpdateManager {
         }
     }
 
+    pub(crate) async fn artifact_history_identity(
+        &self,
+        component: ComponentId,
+        transaction_id: &str,
+    ) -> Option<ArtifactHistoryIdentity> {
+        self.transactions
+            .lock()
+            .await
+            .get(transaction_id)
+            .and_then(|record| record.staged_identity.as_ref())
+            .map(|identity| identity.history_identity(component))
+    }
+
     pub async fn apply(
         &self,
         component: ComponentId,
         transaction_id: &str,
     ) -> StudioResult<McpUpdateTransactionView> {
         self.validate_target(component)?;
+        let _runtime_guard = self
+            .catalog
+            .runtime_operations()
+            .acquire_component(component, "mcp_update")?;
         let _guard = self.acquire(component).await?;
         let (staged_id, source_version, expected_staged) = self
             .ensure_transaction_applicable(transaction_id, component)
@@ -1644,6 +1689,48 @@ mod tests {
                 staged_identity: Some(PreparedStagedIdentity::from(staged)),
             },
         );
+    }
+
+    #[tokio::test]
+    async fn mcp_apply_respects_control_lease() {
+        let (_root, manager, _lifecycle, _verifier, _target) = fixture(false, true);
+        let coordinator = manager.catalog.runtime_operations();
+        let control = coordinator.acquire_control("reconciliation_test").unwrap();
+
+        let error = manager
+            .apply(ComponentId::Git, "txn-git-missing")
+            .await
+            .unwrap_err();
+        assert!(matches!(error, StudioError::Conflict(_)));
+
+        drop(control);
+        let error = manager
+            .apply(ComponentId::Git, "txn-git-missing")
+            .await
+            .unwrap_err();
+        assert!(matches!(error, StudioError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn mcp_apply_blocks_reconciliation_until_terminal() {
+        let (_root, manager, _lifecycle, _verifier, _target) = fixture(false, true);
+        let transactions_guard = manager.transactions.lock().await;
+        let coordinator = manager.catalog.runtime_operations();
+        let running_manager = manager.clone();
+
+        let apply = tokio::spawn(async move {
+            running_manager
+                .apply(ComponentId::Git, "txn-git-blocked")
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        assert!(coordinator.acquire_control("reconciliation_test").is_err());
+        drop(transactions_guard);
+
+        let result = apply.await.unwrap();
+        assert!(matches!(result, Err(StudioError::NotFound(_))));
+        assert!(coordinator.acquire_control("reconciliation_test").is_ok());
     }
 
     #[tokio::test]

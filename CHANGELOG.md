@@ -6,6 +6,22 @@ The project follows Semantic Versioning once public/pre-release artifacts begin.
 
 ## [Unreleased]
 
+## [0.6.0-alpha] - 2026-09-21
+
+### Added
+
+- M6 private SQLite operational history, typed audit evidence, lifecycle/update/config/drift lineage, bounded historical metrics and retention, historical APIs/realtime, and dashboard history views.
+- Native Apple Silicon package qualification and rollback compatibility evidence.
+
+### Changed
+
+- Runtime support is macOS Apple Silicon (`darwin-arm64`) only; Intel hosts fail closed.
+- GitHub Actions workflows were removed. Release packaging and M6 qualification run manually.
+
+### Verified
+
+- Rust format, Clippy, 263 tests, frontend lint, 31 frontend tests, and production build pass locally.
+
 ## [0.5.0] - 2026-09-19
 
 ### Added

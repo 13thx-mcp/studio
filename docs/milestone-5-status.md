@@ -2,8 +2,14 @@
 
 - Target release: `v0.5.0`
 - Implementation branch: `feat/m5-runtime-distribution`
-- Status: LOCAL RELEASE CLOSED — PUBLICATION QUALIFICATION BLOCKED
+- Status: PUBLICATION QUALIFIED
 - Date: 2026-09-19
+
+> Superseded support policy (2026-09-21): product/runtime support is now macOS Apple Silicon (`darwin-arm64`) only. Earlier amd64 references in this historical M5 closeout describe the policy at that time.
+
+## 2026-09-21 publication qualification
+
+`scripts/verify-m5-publication.py` completed with qualified arm64 publication evidence, including verified project artifacts, source-less bootstrap, and the Fleet `0.2.0` → `0.2.1` transition. Historical blocker notes below record the prior state and are superseded by this result.
 
 ## Review remediation status
 
@@ -11,7 +17,7 @@ The 2026-09-19 Mission 5 review found F1–F8 safety/correctness gaps. Correctiv
 
 R6 fixed-tree verification is complete on Studio `a388cf2` and Fleet `8b82752`: regressions, core/Fleet, security, isolated integration and native darwin-arm64 package profiles all passed with clean before/after worktrees and no source change during any run. Evidence: `issues/m5-remediation/results/20260919T140643Z-18307`, `issues/m5-remediation/results/20260919T140854Z-21177`, `issues/m5-remediation/results/20260919T141313Z-27968`, `issues/m5-remediation/results/20260919T141541Z-31839`, `issues/m5-remediation/results/20260919T141810Z-37530`.
 
-This supports **LOCAL RELEASE CLOSED**. It does not establish **PUBLICATION QUALIFIED**: darwin-amd64 still requires a native runner, and published project-owned artifact/bootstrap/update proofs remain outstanding. Previously recorded public-release endpoint failures below are historical evidence and were not freshly rechecked by the remediation matrix.
+This supports **LOCAL RELEASE CLOSED**. It does not establish **PUBLICATION QUALIFIED**: published project-owned artifact/bootstrap/update proofs remain outstanding. The earlier darwin-amd64 runner requirement was removed by the current Apple-Silicon-only support policy. Previously recorded public-release endpoint failures below are historical evidence and were not freshly rechecked by the remediation matrix.
 
 ## Outcome
 
@@ -28,7 +34,7 @@ Studio and web package versions are `0.5.0`; the locally verified branch is merg
 - Closed component catalog: Filesystem, Git, Exec, Gateway, Blender, Studio, Fleet, Tunnel.
 - Project-owned provider confined to `13thx-mcp/*` repositories selected by server policy.
 - Tunnel provider confined to official `openai/tunnel-client` GitHub Releases.
-- Initial supported platform targets: `darwin-amd64` and `darwin-arm64`.
+- Supported runtime target: `darwin-arm64`.
 - Exact asset-name matching; missing/ambiguous assets fail closed.
 - Browser never chooses repository, release URL, checksum URL, executable path, install path, launcher path, PID, config path, or arbitrary command.
 
@@ -242,7 +248,7 @@ Native package profile `issues/m5-remediation/results/20260919T141810Z-37530` pa
 1cef290d8066c77ef687a75a7bf60473efb3d6569f5f75e45c859a97d4fac706
 ```
 
-The native manifest explicitly records `cross_architecture_release_qualified=false`; this is not evidence for darwin-amd64.
+The native manifest records `darwin-arm64` coverage, the sole supported runtime target.
 
 ## Release-publication blocker
 

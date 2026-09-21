@@ -5,6 +5,9 @@ pub enum StudioError {
     #[error("configuration error: {0}")]
     Config(String),
 
+    #[error("history storage error: {0}")]
+    History(String),
+
     #[error("MCP server not found: {0}")]
     NotFound(String),
 

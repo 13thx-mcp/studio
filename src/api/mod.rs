@@ -1,3 +1,5 @@
+mod history;
+
 use std::sync::Arc;
 
 use axum::{
@@ -6,7 +8,7 @@ use axum::{
         Path, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -22,6 +24,9 @@ use crate::{
     error::StudioError,
     realtime::{EventHub, StudioEvent},
     registry::{RegistryEntryView, RegistryUpdate},
+    storage::{
+        ActorKind, HistoryAction, HistoryHandle, OperationContext, OperationOutcome, SubjectKind,
+    },
     supervisor::{LogEntry, ProcessStatus, Supervisor},
     tunnel::{TunnelLogEntry, TunnelStatus, TunnelSupervisor},
     update::{
@@ -45,6 +50,7 @@ pub struct AppState {
     pub tunnel_updates: Arc<TunnelUpdateManager>,
     pub reconciliation: Arc<RuntimeReconciler>,
     pub runtime_operations: Arc<RuntimeOperationCoordinator>,
+    pub history: HistoryHandle,
     pub shutdown: Arc<Notify>,
     pub registry_events: EventHub,
 }
@@ -113,6 +119,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/reconciliation/check", post(check_reconciliation))
         .route("/api/reconciliation/adopt", post(adopt_reconciliation))
         .route("/api/reconciliation/apply", post(apply_reconciliation))
+        .nest("/api/history/v1", history::router())
         .route("/api/ws", get(websocket))
         .fallback_service(web)
         .with_state(state)
@@ -147,6 +154,91 @@ async fn get_mcp(
     Ok(Json(state.supervisor.status(&id).await?))
 }
 
+const OPERATION_ID_HEADER: &str = "x-studio-operation-id";
+const AUDIT_STATUS_HEADER: &str = "x-studio-audit-status";
+const EFFECT_STATUS_HEADER: &str = "x-studio-effect-status";
+
+async fn admit_local_operation(
+    state: &AppState,
+    subject_kind: SubjectKind,
+    action: HistoryAction,
+) -> Result<OperationContext, ApiError> {
+    let history = state.history.clone();
+    tokio::task::spawn_blocking(move || {
+        history
+            .admit_operation(subject_kind, action, ActorKind::LocalOperator)
+            .map(|(context, _)| context)
+    })
+    .await
+    .map_err(|error| {
+        ApiError::from(StudioError::History(format!(
+            "history admission task failed: {error}"
+        )))
+    })?
+    .map_err(Into::into)
+}
+
+async fn audited_result_response<T: Serialize + Send + 'static>(
+    state: &AppState,
+    context: &OperationContext,
+    result: Result<T, StudioError>,
+) -> Response {
+    let (mut response, outcome, effect_status, error_code) = match result {
+        Ok(value) => (
+            Json(value).into_response(),
+            OperationOutcome::Succeeded,
+            "succeeded",
+            None,
+        ),
+        Err(error) => (
+            ApiError::from(error).into_response(),
+            OperationOutcome::Failed,
+            "failed",
+            Some("domain_error"),
+        ),
+    };
+
+    let operation_id = context.operation_id();
+    let terminal_context = context.clone();
+    let history = state.history.clone();
+    let audit_result = tokio::task::spawn_blocking(move || {
+        history.finish_operation(&terminal_context, outcome, error_code)
+    })
+    .await;
+
+    let audit_status = match audit_result {
+        Ok(Ok(_)) => "complete",
+        Ok(Err(error)) => {
+            tracing::warn!(
+                operation_id = %operation_id,
+                history_error = %error,
+                "domain operation completed with incomplete audit terminal evidence"
+            );
+            "incomplete"
+        }
+        Err(error) => {
+            tracing::warn!(
+                operation_id = %operation_id,
+                history_error = %error,
+                "history terminal receipt task failed after domain effect"
+            );
+            "incomplete"
+        }
+    };
+
+    if let Ok(value) = HeaderValue::from_str(&operation_id.to_string()) {
+        response.headers_mut().insert(OPERATION_ID_HEADER, value);
+    }
+    response
+        .headers_mut()
+        .insert(AUDIT_STATUS_HEADER, HeaderValue::from_static(audit_status));
+    response.headers_mut().insert(
+        EFFECT_STATUS_HEADER,
+        HeaderValue::from_static(effect_status),
+    );
+    response
+}
+
 fn acquire_mcp_operation(
     state: &AppState,
     id: &str,
@@ -173,10 +265,13 @@ async fn start_mcp(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
-) -> Result<Json<ProcessStatus>, ApiError> {
+) -> Result<Response, ApiError> {
     ensure_same_origin(&headers)?;
     let _runtime_guard = acquire_mcp_operation(&state, &id, "mcp_start")?;
-    Ok(Json(state.supervisor.start(&id).await?))
+    let operation =
+        admit_local_operation(&state, SubjectKind::Mcp, HistoryAction::McpStart).await?;
+    let result = state.supervisor.start(&id).await;
+    Ok(audited_result_response(&state, &operation, result).await)
 }
 
 async fn stop_mcp(
@@ -193,10 +288,13 @@ async fn restart_mcp(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
-) -> Result<Json<ProcessStatus>, ApiError> {
+) -> Result<Response, ApiError> {
     ensure_same_origin(&headers)?;
     let _runtime_guard = acquire_mcp_operation(&state, &id, "mcp_restart")?;
-    Ok(Json(state.supervisor.restart(&id).await?))
+    let operation =
+        admit_local_operation(&state, SubjectKind::Mcp, HistoryAction::McpRestart).await?;
+    let result = state.supervisor.restart(&id).await;
+    Ok(audited_result_response(&state, &operation, result).await)
 }
 
 async fn get_logs(
@@ -227,53 +325,95 @@ async fn update_registry(
     Path(id): Path<String>,
     headers: HeaderMap,
     Json(update): Json<RegistryUpdate>,
-) -> Result<Json<RegistryEntryView>, ApiError> {
+) -> Result<Response, ApiError> {
     ensure_same_origin(&headers)?;
     let _runtime_guard = acquire_mcp_operation(&state, &id, "registry_update")?;
     require_inactive(&state.supervisor, &id, "edit").await?;
-    let view = state.supervisor.registry().update(&id, update)?;
-    state.registry_events.publish(StudioEvent::RegistryChanged);
-    Ok(Json(view))
+    let operation =
+        admit_local_operation(&state, SubjectKind::Registry, HistoryAction::RegistryUpdate).await?;
+    let result = state.supervisor.registry().update(&id, update);
+    if let Ok(view) = &result {
+        state
+            .history
+            .observe_registry_revision(view, true, operation.operation_id());
+        state.registry_events.publish(StudioEvent::RegistryChanged);
+    }
+    Ok(audited_result_response(&state, &operation, result).await)
 }
 
 async fn enable_mcp(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
-) -> Result<Json<RegistryEntryView>, ApiError> {
+) -> Result<Response, ApiError> {
     ensure_same_origin(&headers)?;
     let _runtime_guard = acquire_mcp_operation(&state, &id, "registry_enable")?;
-    let view = state.supervisor.registry().set_enabled(&id, true)?;
-    state.registry_events.publish(StudioEvent::RegistryChanged);
-    Ok(Json(view))
+    let operation =
+        admit_local_operation(&state, SubjectKind::Registry, HistoryAction::RegistryEnable).await?;
+    let result = state.supervisor.registry().set_enabled(&id, true);
+    if let Ok(view) = &result {
+        state
+            .history
+            .observe_registry_revision(view, true, operation.operation_id());
+        state.registry_events.publish(StudioEvent::RegistryChanged);
+    }
+    Ok(audited_result_response(&state, &operation, result).await)
 }
 
 async fn disable_mcp(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
-) -> Result<Json<RegistryEntryView>, ApiError> {
+) -> Result<Response, ApiError> {
     ensure_same_origin(&headers)?;
     let _runtime_guard = acquire_mcp_operation(&state, &id, "registry_disable")?;
     require_inactive(&state.supervisor, &id, "disable").await?;
-    let view = state.supervisor.registry().set_enabled(&id, false)?;
-    state.registry_events.publish(StudioEvent::RegistryChanged);
-    Ok(Json(view))
+    let operation = admit_local_operation(
+        &state,
+        SubjectKind::Registry,
+        HistoryAction::RegistryDisable,
+    )
+    .await?;
+    let result = state.supervisor.registry().set_enabled(&id, false);
+    if let Ok(view) = &result {
+        state
+            .history
+            .observe_registry_revision(view, true, operation.operation_id());
+        state.registry_events.publish(StudioEvent::RegistryChanged);
+    }
+    Ok(audited_result_response(&state, &operation, result).await)
 }
 
 async fn unregister_mcp(
     State(state): State<AppState>,
     Path(id): Path<String>,
     headers: HeaderMap,
-) -> Result<Json<RegistryEntryView>, ApiError> {
+) -> Result<Response, ApiError> {
     ensure_same_origin(&headers)?;
     let _runtime_guard = acquire_mcp_operation(&state, &id, "registry_unregister")?;
     require_inactive(&state.supervisor, &id, "unregister").await?;
-    let view = state.supervisor.registry().unregister(&id)?;
-    state.supervisor.remove_inactive_runtime(&id).await?;
-    state.registry_events.publish(StudioEvent::RegistryChanged);
-    state.registry_events.publish(StudioEvent::DiscoveryChanged);
-    Ok(Json(view))
+    let operation = admit_local_operation(
+        &state,
+        SubjectKind::Registry,
+        HistoryAction::RegistryUnregister,
+    )
+    .await?;
+
+    let result = match state.supervisor.registry().unregister(&id) {
+        Ok(view) => match state.supervisor.remove_inactive_runtime(&id).await {
+            Ok(()) => Ok(view),
+            Err(error) => Err(error),
+        },
+        Err(error) => Err(error),
+    };
+    if let Ok(view) = &result {
+        state
+            .history
+            .observe_registry_revision(view, false, operation.operation_id());
+        state.registry_events.publish(StudioEvent::RegistryChanged);
+        state.registry_events.publish(StudioEvent::DiscoveryChanged);
+    }
+    Ok(audited_result_response(&state, &operation, result).await)
 }
 
 async fn list_discovery(
@@ -297,17 +437,31 @@ async fn register_discovery(
     Path(candidate_id): Path<String>,
     headers: HeaderMap,
     Json(request): Json<RegisterDiscoveryRequest>,
-) -> Result<Json<RegistryEntryView>, ApiError> {
+) -> Result<Response, ApiError> {
     ensure_same_origin(&headers)?;
     let _runtime_guard = state
         .runtime_operations
         .acquire_control("registry_register")?;
+    let operation = admit_local_operation(
+        &state,
+        SubjectKind::Registry,
+        HistoryAction::DiscoveryApprove,
+    )
+    .await?;
+
     let id = request.id.clone();
-    let server = state.discovery.approve(&candidate_id, request)?;
-    let view = state.supervisor.registry().register(id, server)?;
-    state.registry_events.publish(StudioEvent::RegistryChanged);
-    state.registry_events.publish(StudioEvent::DiscoveryChanged);
-    Ok(Json(view))
+    let result = state
+        .discovery
+        .approve(&candidate_id, request)
+        .and_then(|server| state.supervisor.registry().register(id, server));
+    if let Ok(view) = &result {
+        state
+            .history
+            .observe_registry_revision(view, true, operation.operation_id());
+        state.registry_events.publish(StudioEvent::RegistryChanged);
+        state.registry_events.publish(StudioEvent::DiscoveryChanged);
+    }
+    Ok(audited_result_response(&state, &operation, result).await)
 }
 
 async fn require_inactive(supervisor: &Supervisor, id: &str, action: &str) -> Result<(), ApiError> {
@@ -324,10 +478,13 @@ async fn get_tunnel(State(state): State<AppState>) -> Json<TunnelStatus> {
 async fn start_tunnel(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<Json<TunnelStatus>, ApiError> {
+) -> Result<Response, ApiError> {
     ensure_same_origin(&headers)?;
     let _runtime_guard = state.runtime_operations.acquire_control("tunnel_start")?;
-    Ok(Json(state.tunnel.start().await?))
+    let operation =
+        admit_local_operation(&state, SubjectKind::Tunnel, HistoryAction::TunnelStart).await?;
+    let result = state.tunnel.start().await;
+    Ok(audited_result_response(&state, &operation, result).await)
 }
 
 async fn stop_tunnel(
@@ -342,10 +499,13 @@ async fn stop_tunnel(
 async fn restart_tunnel(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<Json<TunnelStatus>, ApiError> {
+) -> Result<Response, ApiError> {
     ensure_same_origin(&headers)?;
     let _runtime_guard = state.runtime_operations.acquire_control("tunnel_restart")?;
-    Ok(Json(state.tunnel.restart().await?))
+    let operation =
+        admit_local_operation(&state, SubjectKind::Tunnel, HistoryAction::TunnelRestart).await?;
+    let result = state.tunnel.restart().await;
+    Ok(audited_result_response(&state, &operation, result).await)
 }
 
 async fn get_tunnel_logs(State(state): State<AppState>) -> Json<Vec<TunnelLogEntry>> {
@@ -367,11 +527,56 @@ async fn get_update(
 async fn check_updates(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<Json<Vec<InventoryView>>, ApiError> {
+) -> Result<Response, ApiError> {
     ensure_same_origin(&headers)?;
+    let operation =
+        admit_local_operation(&state, SubjectKind::Component, HistoryAction::UpdateCheck).await?;
     let inventory = state.inventory.check().await;
+    for view in &inventory {
+        state
+            .history
+            .observe_update_check(view, operation.operation_id());
+    }
     state.registry_events.publish(StudioEvent::UpdatesChanged);
-    Ok(Json(inventory))
+    Ok(audited_result_response(&state, &operation, Ok::<_, StudioError>(inventory)).await)
+}
+
+async fn prepared_artifact_identity(
+    state: &AppState,
+    component: ComponentId,
+    transaction_id: &str,
+) -> Option<crate::update::ArtifactHistoryIdentity> {
+    match component {
+        ComponentId::Gateway => {
+            state
+                .gateway_updates
+                .artifact_history_identity(transaction_id)
+                .await
+        }
+        ComponentId::Fleet => {
+            state
+                .fleet_updates
+                .artifact_history_identity(transaction_id)
+                .await
+        }
+        ComponentId::Studio => state
+            .self_updates
+            .artifact_history_identity(transaction_id)
+            .ok()
+            .flatten(),
+        ComponentId::Tunnel => {
+            state
+                .tunnel_updates
+                .artifact_history_identity(transaction_id)
+                .await
+        }
+        _ => {
+            state
+                .updates
+                .artifact_history_identity(component, transaction_id)
+                .await
+        }
+    }
 }
 
 async fn prepare_mcp_update(
@@ -379,17 +584,28 @@ async fn prepare_mcp_update(
     Path(component): Path<String>,
     headers: HeaderMap,
     Json(request): Json<PrepareMcpUpdateRequest>,
-) -> Result<Json<McpUpdateTransactionView>, ApiError> {
+) -> Result<Response, ApiError> {
     ensure_same_origin(&headers)?;
     let component: ComponentId = component.parse()?;
-    let transaction = match component {
-        ComponentId::Gateway => state.gateway_updates.prepare(request.version).await?,
-        ComponentId::Fleet => state.fleet_updates.prepare(request.version).await?,
-        ComponentId::Studio => state.self_updates.prepare(request.version).await?,
-        ComponentId::Tunnel => state.tunnel_updates.prepare(request.version).await?,
-        _ => state.updates.prepare(component, request.version).await?,
+    let operation =
+        admit_local_operation(&state, SubjectKind::Component, HistoryAction::UpdatePrepare).await?;
+    let result = match component {
+        ComponentId::Gateway => state.gateway_updates.prepare(request.version).await,
+        ComponentId::Fleet => state.fleet_updates.prepare(request.version).await,
+        ComponentId::Studio => state.self_updates.prepare(request.version).await,
+        ComponentId::Tunnel => state.tunnel_updates.prepare(request.version).await,
+        _ => state.updates.prepare(component, request.version).await,
     };
-    Ok(Json(transaction))
+    if let Ok(view) = &result {
+        let artifact = prepared_artifact_identity(&state, component, &view.transaction_id).await;
+        state.history.observe_update_transaction_with_artifact(
+            view,
+            Some(operation.operation_id()),
+            false,
+            artifact,
+        );
+    }
+    Ok(audited_result_response(&state, &operation, result).await)
 }
 
 async fn apply_mcp_update(
@@ -397,30 +613,70 @@ async fn apply_mcp_update(
     Path(component): Path<String>,
     headers: HeaderMap,
     Json(request): Json<ApplyMcpUpdateRequest>,
-) -> Result<Json<McpUpdateTransactionView>, ApiError> {
+) -> Result<Response, ApiError> {
     ensure_same_origin(&headers)?;
     let component: ComponentId = component.parse()?;
-    let transaction = match component {
-        ComponentId::Gateway => state.gateway_updates.apply(&request.transaction_id).await?,
-        ComponentId::Fleet => state.fleet_updates.apply(&request.transaction_id).await?,
-        ComponentId::Studio => {
-            let transaction = state.self_updates.apply(&request.transaction_id).await?;
-            let shutdown = state.shutdown.clone();
-            tokio::spawn(async move {
-                sleep(Duration::from_millis(250)).await;
-                shutdown.notify_waiters();
-            });
-            transaction
-        }
-        ComponentId::Tunnel => state.tunnel_updates.apply(&request.transaction_id).await?,
+    let operation =
+        admit_local_operation(&state, SubjectKind::Component, HistoryAction::UpdateApply).await?;
+    let result = match component {
+        ComponentId::Gateway => state.gateway_updates.apply(&request.transaction_id).await,
+        ComponentId::Fleet => state.fleet_updates.apply(&request.transaction_id).await,
+        ComponentId::Studio => match state.self_updates.apply(&request.transaction_id).await {
+            Ok(transaction) => {
+                let shutdown = state.shutdown.clone();
+                tokio::spawn(async move {
+                    sleep(Duration::from_millis(250)).await;
+                    shutdown.notify_waiters();
+                });
+                Ok(transaction)
+            }
+            Err(error) => Err(error),
+        },
+        ComponentId::Tunnel => state.tunnel_updates.apply(&request.transaction_id).await,
         _ => {
             state
                 .updates
                 .apply(component, &request.transaction_id)
-                .await?
+                .await
         }
     };
-    Ok(Json(transaction))
+
+    let observed = match &result {
+        Ok(view) => Some(view.clone()),
+        Err(_) => match component {
+            ComponentId::Gateway => state
+                .gateway_updates
+                .transaction(&request.transaction_id)
+                .await
+                .ok(),
+            ComponentId::Fleet => state
+                .fleet_updates
+                .transaction(&request.transaction_id)
+                .await
+                .ok(),
+            ComponentId::Studio => state
+                .self_updates
+                .transaction(&request.transaction_id)
+                .await
+                .ok(),
+            ComponentId::Tunnel => state
+                .tunnel_updates
+                .transaction(&request.transaction_id)
+                .await
+                .ok(),
+            _ => state
+                .updates
+                .transaction(&request.transaction_id)
+                .await
+                .ok(),
+        },
+    };
+    if let Some(view) = observed.as_ref() {
+        state
+            .history
+            .observe_update_transaction(view, Some(operation.operation_id()), true);
+    }
+    Ok(audited_result_response(&state, &operation, result).await)
 }
 
 async fn get_update_transaction(
@@ -461,25 +717,61 @@ async fn get_reconciliation(State(state): State<AppState>) -> Json<Reconciliatio
 async fn check_reconciliation(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<Json<ReconciliationView>, ApiError> {
+) -> Result<Response, ApiError> {
     ensure_same_origin(&headers)?;
-    Ok(Json(state.reconciliation.check().await?))
+    let operation = admit_local_operation(
+        &state,
+        SubjectKind::Fleet,
+        HistoryAction::ReconciliationCheck,
+    )
+    .await?;
+    let result = state.reconciliation.check().await;
+    if let Ok(view) = &result {
+        state
+            .history
+            .observe_drift(view, operation.operation_id(), "check");
+    }
+    Ok(audited_result_response(&state, &operation, result).await)
 }
 
 async fn adopt_reconciliation(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<Json<ReconciliationView>, ApiError> {
+) -> Result<Response, ApiError> {
     ensure_same_origin(&headers)?;
-    Ok(Json(state.reconciliation.adopt().await?))
+    let operation = admit_local_operation(
+        &state,
+        SubjectKind::Fleet,
+        HistoryAction::ReconciliationAdopt,
+    )
+    .await?;
+    let result = state.reconciliation.adopt().await;
+    if let Ok(view) = &result {
+        state
+            .history
+            .observe_drift(view, operation.operation_id(), "adopt");
+    }
+    Ok(audited_result_response(&state, &operation, result).await)
 }
 
 async fn apply_reconciliation(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<Json<ReconciliationView>, ApiError> {
+) -> Result<Response, ApiError> {
     ensure_same_origin(&headers)?;
-    Ok(Json(state.reconciliation.apply().await?))
+    let operation = admit_local_operation(
+        &state,
+        SubjectKind::Fleet,
+        HistoryAction::ReconciliationApply,
+    )
+    .await?;
+    let result = state.reconciliation.apply().await;
+    if let Ok(view) = &result {
+        state
+            .history
+            .observe_drift(view, operation.operation_id(), "apply");
+    }
+    Ok(audited_result_response(&state, &operation, result).await)
 }
 
 async fn websocket(
@@ -494,13 +786,15 @@ async fn websocket(
 }
 
 async fn websocket_session(mut socket: WebSocket, state: AppState) {
+    let mut mcp_receiver = state.supervisor.subscribe_events();
+    let mut tunnel_receiver = state.tunnel.subscribe_events();
+    let mut registry_receiver = state.registry_events.subscribe();
+    let mut history_receiver = state.history.subscribe_events();
+
     if send_snapshot(&mut socket, &state).await.is_err() {
         return;
     }
 
-    let mut mcp_receiver = state.supervisor.subscribe_events();
-    let mut tunnel_receiver = state.tunnel.subscribe_events();
-    let mut registry_receiver = state.registry_events.subscribe();
     loop {
         tokio::select! {
             result = mcp_receiver.recv() => {
@@ -510,6 +804,9 @@ async fn websocket_session(mut socket: WebSocket, state: AppState) {
                 if handle_event_result(&mut socket, &state, result).await.is_err() { break; }
             }
             result = registry_receiver.recv() => {
+                if handle_event_result(&mut socket, &state, result).await.is_err() { break; }
+            }
+            result = history_receiver.recv() => {
                 if handle_event_result(&mut socket, &state, result).await.is_err() { break; }
             }
         }
@@ -646,7 +943,8 @@ impl IntoResponse for ApiError {
             | StudioError::UnsafeArchive { .. }
             | StudioError::PackageValidationFailed { .. }
             | StudioError::BinaryVersionValidationFailed { .. } => StatusCode::BAD_GATEWAY,
-            StudioError::Process(_)
+            StudioError::History(_)
+            | StudioError::Process(_)
             | StudioError::InstalledIdentity(_)
             | StudioError::StagingFailure(_)
             | StudioError::UpdateTransaction(_)
@@ -697,6 +995,7 @@ fn public_error_message(error: &StudioError) -> String {
         StudioError::BinaryVersionValidationFailed { .. } => {
             "binary_version_validation_failed".into()
         }
+        StudioError::History(_) => "history_storage_failed".into(),
         StudioError::StagingFailure(_) => "staging_failed".into(),
         StudioError::InstalledIdentity(_) => "installed_identity_error".into(),
         StudioError::UpdateTransaction(_) => "update_transaction_failed".into(),
@@ -757,10 +1056,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!(
             "mcp-studio-api-inventory-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            uuid::Uuid::new_v4()
         ));
         let catalog = ComponentCatalog::new(
             HostRuntimeRoots::new(root.join("bin"), root.join("runtime")).unwrap(),
@@ -832,6 +1128,7 @@ mod tests {
             tunnel_updates,
             reconciliation,
             runtime_operations,
+            history: crate::storage::HistoryHandle::initialize(&root.join("runtime")),
             shutdown: Arc::new(Notify::new()),
             registry_events: events,
         })
@@ -849,6 +1146,47 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), axum::http::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn admitted_mutation_returns_effect_and_audit_headers() {
+        let response = test_router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/mcp/missing/start")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+        let operation_id = response
+            .headers()
+            .get("x-studio-operation-id")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        uuid::Uuid::parse_str(operation_id).unwrap();
+        assert_eq!(
+            response
+                .headers()
+                .get("x-studio-audit-status")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "complete"
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("x-studio-effect-status")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "failed"
+        );
     }
 
     #[tokio::test]
@@ -1009,6 +1347,59 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(response.status(), axum::http::StatusCode::FORBIDDEN);
+        }
+    }
+
+    #[tokio::test]
+    async fn reconciliation_check_side_effect_is_audited() {
+        let app = test_router();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/reconciliation/check")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get("x-studio-audit-status")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "complete"
+        );
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        loop {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/history/v1/drift?limit=10")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), axum::http::StatusCode::OK);
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            let items = json["items"].as_array().unwrap();
+            if let Some(item) = items.first() {
+                assert_eq!(item["observation_kind"], "check");
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "reconciliation drift audit observation did not become visible"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
 

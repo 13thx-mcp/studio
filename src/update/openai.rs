@@ -763,16 +763,10 @@ mod tests {
             component: ComponentId::Tunnel,
             version: Version::parse("0.0.14").unwrap(),
             tag: "v0.0.14".into(),
-            assets: vec![
-                ReleaseAsset {
-                    name: runtime_asset("v0.0.14", "darwin-amd64"),
-                    download_url: asset_url("v0.0.14", &runtime_asset("v0.0.14", "darwin-amd64")),
-                },
-                ReleaseAsset {
-                    name: runtime_asset("v0.0.14", "darwin-arm64"),
-                    download_url: asset_url("v0.0.14", &runtime_asset("v0.0.14", "darwin-arm64")),
-                },
-            ],
+            assets: vec![ReleaseAsset {
+                name: runtime_asset("v0.0.14", "darwin-arm64"),
+                download_url: asset_url("v0.0.14", &runtime_asset("v0.0.14", "darwin-arm64")),
+            }],
             checksum_manifest_url: asset_url("v0.0.14", CHECKSUM_MANIFEST_NAME),
         };
         let selected = provider
@@ -780,13 +774,13 @@ mod tests {
                 &release,
                 Platform {
                     os: crate::update::OperatingSystem::Darwin,
-                    arch: crate::update::Architecture::Amd64,
+                    arch: crate::update::Architecture::Arm64,
                 },
             )
             .unwrap();
         assert_eq!(
             selected.name,
-            "tunnel-client-runtime-cloudflared-v0.0.14-darwin-amd64.zip"
+            "tunnel-client-runtime-cloudflared-v0.0.14-darwin-arm64.zip"
         );
     }
 

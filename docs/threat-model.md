@@ -66,7 +66,7 @@ SQLite history/metrics/audit persistence, automatic restart/backoff, remote auth
 - The `github_openai` provider accepts only the catalog-owned `tunnel` component and exact `openai/tunnel-client` source; a caller-mutated source cannot redirect it to the archived project placeholder or another repository.
 - Tunnel release metadata must contain an unambiguous runtime-cloudflared ZIP family whose embedded version matches the release tag; evidence sidecars and source archives are not treated as runtime candidates.
 - M5.3 exposes no update/download/activation API, downloads no release archive, performs no extraction, and changes no runtime installation.
-- Host platform normalization is centralized: only Darwin/macOS plus amd64/arm64 aliases are accepted; unsupported OS/architecture values fail closed.
+- Host platform normalization is centralized: only Darwin/macOS Apple Silicon aliases (`arm64`/`aarch64`) are accepted; Intel and every other OS/architecture fail closed.
 - Every component has a server-owned release asset contract; Fleet architecture independence is explicit policy rather than inferred from filenames.
 - Asset selection derives one exact expected filename from trusted component policy, semantic release version, and typed platform. It never falls back across architectures or uses substring/closest matching.
 - Missing exact assets, duplicate exact assets, and release/component mismatches fail closed before artifact download.
@@ -145,11 +145,11 @@ SQLite history/metrics/audit persistence, automatic restart/backoff, remote auth
 
 **Controls:**
 
-- Supported host identity is a closed typed set for M5.4: Darwin amd64 and Darwin arm64 only.
+- Supported host identity is a closed typed set for M5.4: Darwin arm64 only.
 - Component packaging policy is server-owned and includes the exact asset stem and packaging kind.
 - Expected archive names are generated from trusted policy plus `Version` and `Platform`; the selector compares complete filenames for equality.
-- No amd64/arm64 fallback, substring matching, or sidecar/source/full-client substitution is permitted.
-- Architecture-independent Fleet packaging is explicitly declared and tested for both supported host architectures.
+- No architecture fallback, substring matching, or sidecar/source/full-client substitution is permitted.
+- Architecture-independent Fleet packaging is explicitly declared and tested for the supported host architecture.
 - Zero and duplicate exact matches have distinct typed failures.
 
 **Residual risk:** M5.4 selects metadata only. M5.5 must verify the selected bytes against `SHA256SUMS.txt` and validate archive structure/content before staging.

@@ -91,6 +91,18 @@ export type StudioEvent =
   | { type: "updates_changed" }
   | { type: "update_transaction"; transaction: UpdateTransaction }
   | { type: "reconciliation_changed"; status: ReconciliationView }
+  | {
+      type: "history_committed";
+      db_epoch: string;
+      latest_seq: string;
+      retention_epoch: string;
+    }
+  | {
+      type: "history_health";
+      state: string;
+      reason_code: string | null;
+      admission_available: boolean;
+    }
   | { type: "resync_required" };
 
 export type UpdateComponent =

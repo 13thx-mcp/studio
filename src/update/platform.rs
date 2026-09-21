@@ -43,7 +43,6 @@ pub fn normalize_os(value: &str) -> StudioResult<OperatingSystem> {
 
 pub fn normalize_arch(value: &str) -> StudioResult<Architecture> {
     match value.to_ascii_lowercase().as_str() {
-        "x86_64" | "amd64" => Ok(Architecture::Amd64),
         "arm64" | "aarch64" => Ok(Architecture::Arm64),
         _ => Err(StudioError::UnsupportedArchitecture(value.to_owned())),
     }
@@ -151,17 +150,6 @@ mod tests {
     }
 
     #[test]
-    fn normalizes_darwin_x86_64_to_darwin_amd64() {
-        assert_eq!(
-            HostPlatform::from_raw("Darwin", "x86_64")
-                .unwrap()
-                .platform()
-                .to_string(),
-            "darwin-amd64"
-        );
-    }
-
-    #[test]
     fn normalizes_darwin_arm64_to_darwin_arm64() {
         assert_eq!(
             HostPlatform::from_raw("Darwin", "arm64")
@@ -176,8 +164,6 @@ mod tests {
     fn normalization_accepts_required_aliases_and_rust_macos_identity() {
         assert_eq!(normalize_os("darwin").unwrap(), OperatingSystem::Darwin);
         assert_eq!(normalize_os("macos").unwrap(), OperatingSystem::Darwin);
-        assert_eq!(normalize_arch("amd64").unwrap(), Architecture::Amd64);
-        assert_eq!(normalize_arch("x86_64").unwrap(), Architecture::Amd64);
         assert_eq!(normalize_arch("arm64").unwrap(), Architecture::Arm64);
         assert_eq!(normalize_arch("aarch64").unwrap(), Architecture::Arm64);
     }
@@ -191,6 +177,10 @@ mod tests {
         assert!(matches!(
             HostPlatform::from_raw("Darwin", "riscv64").unwrap_err(),
             StudioError::UnsupportedArchitecture(value) if value == "riscv64"
+        ));
+        assert!(matches!(
+            HostPlatform::from_raw("Darwin", "x86_64").unwrap_err(),
+            StudioError::UnsupportedArchitecture(value) if value == "x86_64"
         ));
     }
 
@@ -224,16 +214,13 @@ mod tests {
         let release = release(
             ComponentId::Studio,
             "0.5.0",
-            &[
-                "mcp-studio-v0.5.0-darwin-amd64.tar.gz",
-                "mcp-studio-v0.5.0-darwin-arm64.tar.gz",
-            ],
+            &["mcp-studio-v0.5.0-darwin-arm64.tar.gz"],
         );
         assert_eq!(
-            select_release_asset(component, &release, platform(Architecture::Amd64))
+            select_release_asset(component, &release, platform(Architecture::Arm64))
                 .unwrap()
                 .name,
-            "mcp-studio-v0.5.0-darwin-amd64.tar.gz"
+            "mcp-studio-v0.5.0-darwin-arm64.tar.gz"
         );
     }
 
@@ -247,14 +234,12 @@ mod tests {
         );
         let release = release(ComponentId::Fleet, "0.2.0", &["mcp-fleet-v0.2.0.tar.gz"]);
 
-        for arch in [Architecture::Amd64, Architecture::Arm64] {
-            assert_eq!(
-                select_release_asset(component, &release, platform(arch))
-                    .unwrap()
-                    .name,
-                "mcp-fleet-v0.2.0.tar.gz"
-            );
-        }
+        assert_eq!(
+            select_release_asset(component, &release, platform(Architecture::Arm64))
+                .unwrap()
+                .name,
+            "mcp-fleet-v0.2.0.tar.gz"
+        );
     }
 
     #[test]

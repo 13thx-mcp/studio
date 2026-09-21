@@ -38,6 +38,16 @@ pub enum StudioEvent {
     ReconciliationChanged {
         status: ReconciliationView,
     },
+    HistoryCommitted {
+        db_epoch: String,
+        latest_seq: String,
+        retention_epoch: String,
+    },
+    HistoryHealth {
+        state: String,
+        reason_code: Option<String>,
+        admission_available: bool,
+    },
     ResyncRequired,
 }
 

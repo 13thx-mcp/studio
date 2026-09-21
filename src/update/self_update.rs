@@ -19,8 +19,8 @@ use crate::{
 };
 
 use super::{
-    ArtifactStager, ComponentCatalog, ComponentId, InventoryService, McpUpdatePhase,
-    McpUpdateTransactionView, ReleaseProvider, ReleaseProviderId, StagedArtifact,
+    ArtifactHistoryIdentity, ArtifactStager, ComponentCatalog, ComponentId, InventoryService,
+    McpUpdatePhase, McpUpdateTransactionView, ReleaseProvider, ReleaseProviderId, StagedArtifact,
     ThirteenthXReleaseProvider, Version,
     transaction::{now_ms, sanitize_transaction_error},
 };
@@ -496,6 +496,27 @@ impl SelfUpdateManager {
         }
 
         Ok(record.view())
+    }
+
+    pub(crate) fn artifact_history_identity(
+        &self,
+        transaction_id: &str,
+    ) -> StudioResult<Option<ArtifactHistoryIdentity>> {
+        let record = self.read_record(transaction_id)?;
+        Ok(record
+            .staged_fingerprint
+            .as_ref()
+            .map(|staged| ArtifactHistoryIdentity {
+                component: ComponentId::Studio,
+                version: staged.version.to_string(),
+                provider_code: match staged.provider {
+                    ReleaseProviderId::ThirteenthXGitHub => "github_13thx",
+                    ReleaseProviderId::OpenAiGitHub => "github_openai",
+                },
+                platform_code: self.inventory.platform().to_string(),
+                archive_sha256: staged.archive_sha256.clone(),
+                member_sha256: staged.executable_sha256.clone(),
+            }))
     }
 
     pub async fn transaction(
@@ -1357,6 +1378,10 @@ mod tests {
         ReleaseAsset,
     };
 
+    const FLEET_LAUNCHER_FIXTURE: &str = include_str!("../../tests/fixtures/fleetctl.py");
+    const FLEET_LAUNCHER_FIXTURE_SHA256: &str =
+        "9d35f9718c3b70e26478845ef35e04fed232dc18e1ec929b5f4768c18644b273";
+
     struct NoopProvider;
 
     #[async_trait]
@@ -1669,6 +1694,28 @@ mod tests {
             .port()
     }
 
+    fn test_python3_executable() -> PathBuf {
+        let output = std::process::Command::new("python3")
+            .args(["-c", "import sys; print(sys.executable)"])
+            .output()
+            .expect("python3 is required for external launcher smoke tests");
+        assert!(
+            output.status.success(),
+            "python3 interpreter probe failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let executable = String::from_utf8(output.stdout)
+            .expect("python3 interpreter path must be UTF-8")
+            .trim()
+            .to_owned();
+        let path = PathBuf::from(executable);
+        assert!(
+            path.is_absolute(),
+            "python3 interpreter path must be absolute"
+        );
+        path
+    }
+
     fn fake_studio_server(path: &Path, value: &str, serve: bool) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         let run_body = if serve {
@@ -1714,10 +1761,11 @@ server.serve_forever()
         } else {
             "raise SystemExit(1)\n"
         };
+        let python = test_python3_executable();
         fs::write(
             path,
             format!(
-                r#"#!/usr/bin/env python3
+                r#"#!{}
 import json
 import os
 import sys
@@ -1728,7 +1776,8 @@ VERSION = "{value}"
 if "--version" in sys.argv:
     print("mcp-studio " + VERSION)
     raise SystemExit(0)
-{run_body}"#
+{run_body}"#,
+                python.display()
             ),
         )
         .unwrap();
@@ -1770,8 +1819,12 @@ if "--version" in sys.argv:
             ),
         )
         .unwrap();
-        let source_launcher = PathBuf::from("../fleet/scripts/fleetctl.py");
-        let mut launcher_text = fs::read_to_string(source_launcher).unwrap();
+        let fixture_digest = format!("{:x}", Sha256::digest(FLEET_LAUNCHER_FIXTURE.as_bytes()));
+        assert_eq!(
+            fixture_digest, FLEET_LAUNCHER_FIXTURE_SHA256,
+            "pinned Fleet launcher fixture changed without review"
+        );
+        let mut launcher_text = FLEET_LAUNCHER_FIXTURE.to_owned();
         if let Some(timeout_value) = health_timeout_seconds {
             launcher_text = launcher_text.replace(
                 "SELF_UPDATE_HEALTH_TIMEOUT_SECONDS = 20.0",
@@ -1840,7 +1893,7 @@ if "--version" in sys.argv:
         let config_before = fs::read(studio_root.join("studio.toml")).unwrap();
         let state_before = fs::read(studio_root.join("data/preserve.txt")).unwrap();
 
-        let status = std::process::Command::new("python3")
+        let output = std::process::Command::new(test_python3_executable())
             .arg(runtime_root.join("fleet/scripts/fleetctl.py"))
             .arg("studio-activate")
             .arg("--host")
@@ -1853,9 +1906,15 @@ if "--version" in sys.argv:
             .env_clear()
             .env("PATH", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin")
             .env("PYTHONDONTWRITEBYTECODE", "1")
-            .status()
+            .output()
             .unwrap();
-        assert!(status.success());
+        assert!(
+            output.status.success(),
+            "Fleet launcher failed: status={:?} stdout={} stderr={}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
 
         let current = fs::read_link(studio_root.join("current")).unwrap();
         assert_eq!(current, PathBuf::from("releases/v9.9.9"));
@@ -1897,7 +1956,7 @@ if "--version" in sys.argv:
         let config_before = fs::read(studio_root.join("studio.toml")).unwrap();
         let state_before = fs::read(studio_root.join("data/preserve.txt")).unwrap();
 
-        let status = std::process::Command::new("python3")
+        let output = std::process::Command::new(test_python3_executable())
             .arg(runtime_root.join("fleet/scripts/fleetctl.py"))
             .arg("studio-activate")
             .arg("--host")
@@ -1910,9 +1969,15 @@ if "--version" in sys.argv:
             .env_clear()
             .env("PATH", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin")
             .env("PYTHONDONTWRITEBYTECODE", "1")
-            .status()
+            .output()
             .unwrap();
-        assert_eq!(status.code(), Some(3));
+        assert_eq!(
+            output.status.code(),
+            Some(3),
+            "Fleet rollback launcher returned unexpected status: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
 
         assert!(!studio_root.join("current").exists());
         assert_eq!(

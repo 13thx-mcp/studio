@@ -12,6 +12,7 @@ use std::{
 use mcp_studio::{
     error::StudioError,
     realtime::{EventHub, StudioEvent},
+    storage::HistoryHandle,
     tunnel::{SecretReference, TunnelConfig, TunnelState, TunnelStatus, TunnelSupervisor},
 };
 
@@ -143,6 +144,87 @@ async fn unexpected_zero_exit_is_still_a_crash() {
 }
 
 #[tokio::test]
+async fn tunnel_clean_zero_exit_is_still_crash_in_history() {
+    let fixture = Fixture::new(
+        "#!/bin/sh
+exit 0
+",
+    );
+    let history = HistoryHandle::initialize(&fixture.root.join("history-runtime"));
+    history
+        .start_run(uuid::Uuid::new_v4(), "tunnel-history-test", None)
+        .unwrap();
+    let supervisor = TunnelSupervisor::new_with_history(
+        TunnelConfig {
+            name: "Test tunnel".into(),
+            runtime: fixture.root.join("runtime.sh"),
+            working_dir: fixture.root.clone(),
+            config_file: fixture.root.join("config.yaml"),
+            env: BTreeMap::new(),
+        },
+        64,
+        Duration::from_secs(1),
+        PathBuf::from("/"),
+        EventHub::default(),
+        history.clone(),
+    );
+
+    supervisor.start().await.unwrap();
+    wait_for_state(&supervisor, TunnelState::Failed).await;
+    history.close_run(true).unwrap();
+    history.shutdown();
+
+    let connection = rusqlite::Connection::open(
+        fixture
+            .root
+            .join("history-runtime/studio/data/history/studio.sqlite3"),
+    )
+    .unwrap();
+    let (end_kind, exit_code, is_crash): (String, Option<i32>, Option<i64>) = connection
+        .query_row(
+            "SELECT end_kind, exit_code, is_crash FROM runtime_sessions LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(end_kind, "unexpected_exit");
+    assert_eq!(exit_code, Some(0));
+    assert_eq!(is_crash, Some(1));
+}
+
+#[tokio::test]
+async fn tunnel_shutdown_completes_with_stalled_history() {
+    let fixture = Fixture::new(LONG_RUNNING);
+    let history = HistoryHandle::initialize(&fixture.root.join("history-runtime"));
+    history
+        .start_run(uuid::Uuid::new_v4(), "stalled-tunnel-history", None)
+        .unwrap();
+    let supervisor = TunnelSupervisor::new_with_history(
+        TunnelConfig {
+            name: "Test tunnel".into(),
+            runtime: fixture.root.join("runtime.sh"),
+            working_dir: fixture.root.clone(),
+            config_file: fixture.root.join("config.yaml"),
+            env: BTreeMap::new(),
+        },
+        64,
+        Duration::from_secs(1),
+        PathBuf::from("/"),
+        EventHub::default(),
+        history.clone(),
+    );
+
+    assert_eq!(
+        supervisor.start().await.unwrap().state,
+        TunnelState::Running
+    );
+    history.shutdown();
+
+    supervisor.shutdown().await;
+    assert_eq!(supervisor.status().await.state, TunnelState::Stopped);
+}
+
+#[tokio::test]
 async fn invalid_runtime_is_rejected_and_recorded_as_failed() {
     let fixture = Fixture::new(LONG_RUNNING);
     let supervisor = TunnelSupervisor::new(
@@ -236,11 +318,23 @@ async fn secret_value_is_redacted_before_logs_are_exposed() {
     );
 
     supervisor.start().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(75)).await;
-    let logs = supervisor.logs().await;
-    let serialized = serde_json::to_string(&logs).unwrap();
-    assert!(!serialized.contains("super-secret-value"));
-    assert!(serialized.contains("[REDACTED]"));
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let logs = supervisor.logs().await;
+        let serialized = serde_json::to_string(&logs).unwrap();
+        assert!(
+            !serialized.contains("super-secret-value"),
+            "secret value became observable before redaction"
+        );
+        if serialized.contains("[REDACTED]") {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for redacted tunnel log; last logs: {serialized}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     supervisor.shutdown().await;
 }
 

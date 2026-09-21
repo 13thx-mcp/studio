@@ -19,6 +19,7 @@ use tokio::{
 use crate::{
     error::{StudioError, StudioResult},
     realtime::{EventHub, StudioEvent},
+    storage::{HistoryHandle, LifecycleEndKind, LifecycleOwnerKind, LifecycleSessionContext},
 };
 
 #[derive(Debug, Deserialize)]
@@ -135,6 +136,7 @@ struct RuntimeState {
     next_log_sequence: u64,
     generation: u64,
     launch_evidence: Option<TunnelLaunchEvidence>,
+    history_session: Option<LifecycleSessionContext>,
 }
 
 impl Default for RuntimeState {
@@ -151,6 +153,7 @@ impl Default for RuntimeState {
             next_log_sequence: 1,
             generation: 0,
             launch_evidence: None,
+            history_session: None,
         }
     }
 }
@@ -204,6 +207,7 @@ pub struct TunnelSupervisor {
     log_capacity: usize,
     stop_timeout: Duration,
     base_dir: Arc<PathBuf>,
+    history: Option<HistoryHandle>,
 }
 
 impl TunnelSupervisor {
@@ -214,6 +218,35 @@ impl TunnelSupervisor {
         base_dir: PathBuf,
         events: EventHub,
     ) -> Self {
+        Self::new_internal(config, log_capacity, stop_timeout, base_dir, events, None)
+    }
+
+    pub fn new_with_history(
+        config: TunnelConfig,
+        log_capacity: usize,
+        stop_timeout: Duration,
+        base_dir: PathBuf,
+        events: EventHub,
+        history: HistoryHandle,
+    ) -> Self {
+        Self::new_internal(
+            config,
+            log_capacity,
+            stop_timeout,
+            base_dir,
+            events,
+            Some(history),
+        )
+    }
+
+    fn new_internal(
+        config: TunnelConfig,
+        log_capacity: usize,
+        stop_timeout: Duration,
+        base_dir: PathBuf,
+        events: EventHub,
+        history: Option<HistoryHandle>,
+    ) -> Self {
         Self {
             config: Arc::new(config),
             runtime: Arc::new(Mutex::new(RuntimeState::default())),
@@ -221,6 +254,7 @@ impl TunnelSupervisor {
             log_capacity,
             stop_timeout,
             base_dir: Arc::new(base_dir),
+            history,
         }
     }
 
@@ -393,6 +427,9 @@ impl TunnelSupervisor {
         };
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
+        let history_session = self.history.as_ref().and_then(|history| {
+            history.observe_session_started(LifecycleOwnerKind::Tunnel, generation, pid)
+        });
 
         {
             let mut state = self.runtime.lock().await;
@@ -406,6 +443,7 @@ impl TunnelSupervisor {
             state.started_at = Some(Instant::now());
             state.last_exit_code = None;
             state.last_error = None;
+            state.history_session = history_session.clone();
             state.launch_evidence = Some(TunnelLaunchEvidence {
                 generation,
                 pid,
@@ -422,6 +460,24 @@ impl TunnelSupervisor {
             self.events.publish(StudioEvent::TunnelLog { entry });
         }
         self.publish_status().await;
+
+        if let (Some(history), Some(context)) = (self.history.clone(), history_session) {
+            let heartbeat_runtime = self.runtime.clone();
+            tokio::spawn(async move {
+                loop {
+                    sleep(Duration::from_secs(15)).await;
+                    let active = {
+                        let state = heartbeat_runtime.lock().await;
+                        state.generation == generation
+                            && matches!(state.state, TunnelState::Running | TunnelState::Stopping)
+                    };
+                    if !active {
+                        break;
+                    }
+                    history.observe_session_heartbeat(&context);
+                }
+            });
+        }
 
         if let Some(stdout) = stdout {
             spawn_log_reader(
@@ -448,40 +504,70 @@ impl TunnelSupervisor {
         let events = self.events.clone();
         let capacity = self.log_capacity;
         let name = self.config.name.clone();
+        let history = self.history.clone();
         tokio::spawn(async move {
             let result = child.wait().await;
-            let (status, entry) = {
+            let (status, entry, terminal) = {
                 let mut state = runtime.lock().await;
                 if state.generation != generation {
                     return;
                 }
                 let was_stopping = state.state == TunnelState::Stopping;
+                let exact_duration = state.started_at.map(|started| started.elapsed());
+                let history_session = state.history_session.take();
                 state.pid = None;
                 state.started_at = None;
                 state.launch_evidence = None;
-                let message = match result {
+                let (message, end_kind, exit_code, is_crash) = match result {
                     Ok(exit) => {
-                        state.last_exit_code = exit.code();
+                        let exit_code = exit.code();
+                        state.last_exit_code = exit_code;
                         if was_stopping {
                             state.state = TunnelState::Stopped;
                             state.last_error = None;
+                            (
+                                format!("process exited: {exit}"),
+                                LifecycleEndKind::RequestedStop,
+                                exit_code,
+                                false,
+                            )
                         } else {
                             state.state = TunnelState::Failed;
                             state.crash_count = state.crash_count.saturating_add(1);
                             state.last_error = Some(format!("process exited unexpectedly: {exit}"));
+                            (
+                                format!("process exited: {exit}"),
+                                LifecycleEndKind::UnexpectedExit,
+                                exit_code,
+                                true,
+                            )
                         }
-                        format!("process exited: {exit}")
                     }
                     Err(error) => {
                         state.state = TunnelState::Failed;
                         state.crash_count = state.crash_count.saturating_add(1);
                         state.last_error = Some(format!("failed waiting for process: {error}"));
-                        format!("wait failed: {error}")
+                        (
+                            format!("wait failed: {error}"),
+                            LifecycleEndKind::WaitError,
+                            None,
+                            true,
+                        )
                     }
                 };
                 let entry = state.push_log(capacity, TunnelLogStream::Studio, message);
-                (state.status(&name, true), entry)
+                (
+                    state.status(&name, true),
+                    entry,
+                    history_session
+                        .map(|context| (context, end_kind, exit_code, is_crash, exact_duration)),
+                )
             };
+            if let (Some(history), Some((context, end_kind, exit_code, is_crash, duration))) =
+                (history.as_ref(), terminal)
+            {
+                history.observe_session_terminal(context, end_kind, exit_code, is_crash, duration);
+            }
             events.publish(StudioEvent::TunnelLog { entry });
             events.publish(StudioEvent::TunnelStatus { status });
         });
@@ -571,6 +657,7 @@ impl TunnelSupervisor {
             state.pid = None;
             state.started_at = None;
             state.launch_evidence = None;
+            state.history_session = None;
             state.last_error = Some(error.to_string());
             let entry = state.push_log(
                 self.log_capacity,
@@ -578,6 +665,9 @@ impl TunnelSupervisor {
                 format!("failed to start: {error}"),
             );
             self.events.publish(StudioEvent::TunnelLog { entry });
+        }
+        if let Some(history) = &self.history {
+            history.observe_start_failed(LifecycleOwnerKind::Tunnel, generation);
         }
         self.publish_status().await;
     }

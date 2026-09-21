@@ -3,7 +3,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::Write,
     path::{Component, Path, PathBuf},
-    sync::{Arc, RwLock},
+    sync::{Arc, Mutex, RwLock},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -70,6 +70,7 @@ pub struct RegistryUpdate {
 #[derive(Clone)]
 pub struct Registry {
     inner: Arc<RwLock<RegistryDocument>>,
+    mutation: Arc<Mutex<()>>,
     path: Arc<PathBuf>,
     canonical_root: Arc<PathBuf>,
 }
@@ -117,6 +118,7 @@ impl Registry {
 
         Ok(Self {
             inner: Arc::new(RwLock::new(document)),
+            mutation: Arc::new(Mutex::new(())),
             path: Arc::new(registry_path),
             canonical_root: Arc::new(canonical_root),
         })
@@ -136,6 +138,7 @@ impl Registry {
         validate_document(&document, &canonical_root)?;
         Ok(Self {
             inner: Arc::new(RwLock::new(document)),
+            mutation: Arc::new(Mutex::new(())),
             path: Arc::new(PathBuf::new()),
             canonical_root: Arc::new(canonical_root),
         })
@@ -177,6 +180,10 @@ impl Registry {
     }
 
     pub fn register(&self, id: String, server: RegisteredMcp) -> StudioResult<RegistryEntryView> {
+        let _mutation = self
+            .mutation
+            .lock()
+            .expect("registry mutation lock poisoned");
         validate_id(&id)?;
         let mut candidate = self.snapshot();
         if candidate.servers.contains_key(&id) {
@@ -189,6 +196,10 @@ impl Registry {
     }
 
     pub fn update(&self, id: &str, update: RegistryUpdate) -> StudioResult<RegistryEntryView> {
+        let _mutation = self
+            .mutation
+            .lock()
+            .expect("registry mutation lock poisoned");
         let mut candidate = self.snapshot();
         let server = candidate
             .servers
@@ -205,6 +216,10 @@ impl Registry {
     }
 
     pub fn set_enabled(&self, id: &str, enabled: bool) -> StudioResult<RegistryEntryView> {
+        let _mutation = self
+            .mutation
+            .lock()
+            .expect("registry mutation lock poisoned");
         let mut candidate = self.snapshot();
         let server = candidate
             .servers
@@ -217,6 +232,10 @@ impl Registry {
     }
 
     pub fn unregister(&self, id: &str) -> StudioResult<RegistryEntryView> {
+        let _mutation = self
+            .mutation
+            .lock()
+            .expect("registry mutation lock poisoned");
         let mut candidate = self.snapshot();
         let server = candidate
             .servers
@@ -618,6 +637,63 @@ mod tests {
             ]),
         };
         validate_document(&document, &fs::canonicalize(&root).unwrap()).unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn registry_concurrent_mutations_preserve_both_changes() {
+        use std::sync::{Arc as StdArc, Barrier};
+        use std::thread;
+
+        let root = temp_root("concurrent-mutations");
+        fs::create_dir_all(root.join("one")).unwrap();
+        fs::create_dir_all(root.join("two")).unwrap();
+
+        let registry_path = root.join("registry.toml");
+        let document = RegistryDocument {
+            schema_version: REGISTRY_SCHEMA_VERSION,
+            mcp_root: PathBuf::from("."),
+            servers: BTreeMap::new(),
+        };
+        persist_document(&registry_path, &document).unwrap();
+
+        let registry = Registry {
+            inner: Arc::new(RwLock::new(document)),
+            mutation: Arc::new(Mutex::new(())),
+            path: Arc::new(registry_path.clone()),
+            canonical_root: Arc::new(fs::canonicalize(&root).unwrap()),
+        };
+        let barrier = StdArc::new(Barrier::new(3));
+
+        let one = {
+            let registry = registry.clone();
+            let barrier = barrier.clone();
+            thread::spawn(move || {
+                barrier.wait();
+                registry.register("one".into(), server("one")).unwrap();
+            })
+        };
+        let two = {
+            let registry = registry.clone();
+            let barrier = barrier.clone();
+            thread::spawn(move || {
+                barrier.wait();
+                registry.register("two".into(), server("two")).unwrap();
+            })
+        };
+        barrier.wait();
+        one.join().unwrap();
+        two.join().unwrap();
+
+        let ids = registry.ids();
+        assert_eq!(ids, vec!["one".to_owned(), "two".to_owned()]);
+
+        let persisted: RegistryDocument =
+            toml::from_str(&fs::read_to_string(&registry_path).unwrap()).unwrap();
+        assert_eq!(
+            persisted.servers.keys().cloned().collect::<Vec<_>>(),
+            vec!["one".to_owned(), "two".to_owned()]
+        );
         let _ = fs::remove_dir_all(root);
     }
 
