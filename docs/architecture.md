@@ -4,11 +4,13 @@
 
 MCP Studio is a local-first control plane for MCP servers and the existing secure tunnel runtime under `mcp-server/`.
 
-## Current boundary — Milestone 5.12
+## Current boundary — Milestone 6
 
-Milestones 0–4 provide MCP supervision, the browser dashboard, secure-tunnel lifecycle, a persistent MCP registry, and metadata-only project discovery. M5.1–M5.6 add typed runtime-distribution policy, trusted release discovery/staging, and runtime inventory/drift. M5.7 adds generic flat Rust MCP transactions; M5.8 adds Gateway-specific control-path-safe update/reconnect; M5.9 adds architecture-independent Fleet control-bundle update with local-profile/state preservation and render compatibility validation. M5.9A adds a runtime reconciliation boundary so Fleet-generated Gateway/Studio/tunnel config is compared against desired render and repaired transactionally when ownership is proven. M5.10 adds durable Studio self-update staging plus a Fleet-owned external activation/rollback launcher and versioned Studio release layout. M5.11 adds the operator-facing Updates/Fleet dashboard over the existing inventory, transaction, reconciliation, realtime, and reconnect contracts. M5.12 adds official Tunnel activation/rollback, source-less closure/fault drills, and release-readiness evidence; implementation is complete but v0.5.0 publication remains blocked while required public 13thx-mcp project releases are unavailable.
+Milestones 0–4 provide MCP supervision, the browser dashboard, secure-tunnel lifecycle, a persistent MCP registry, and metadata-only project discovery. M5 adds trusted runtime distribution, inventory/drift, transactional MCP/Gateway/Fleet/Tunnel updates, runtime reconciliation, external Studio self-update, rollback, and the Updates/Fleet operator surface. M5 publication qualification is complete for the supported darwin-arm64 runtime.
 
-Registry/configuration persistence remains file-backed. SQLite history/metrics/audit persistence, automatic restart/backoff, remote authentication, and MCP gateway traffic telemetry remain later milestones.
+M6 adds private SQLite-backed operational history, typed audit admission/outcome evidence, Studio/MCP/Tunnel observation sessions, update/artifact/install lineage, configuration/drift history, replay-safe metrics, bounded retention, and historical REST/realtime/UI. Registry/configuration files and live runtime/update owners remain authoritative; SQLite is historical evidence only and never resumes recovery or rehydrates live authority.
+
+Automatic restart/backoff, remote authentication, and Gateway-observed MCP request/usage telemetry remain later milestones. M7 is the next implementation boundary.
 
 ## Components
 
@@ -19,10 +21,10 @@ Registry/configuration persistence remains file-backed. SQLite history/metrics/a
 - `supervisor`: MCP child-process lifecycle, transient runtime state, PID ownership, log capture, event publication, and shutdown cleanup.
 - `tunnel`: independent tunnel configuration/lifecycle/secret-redaction domain.
 - `update`: trusted component catalog plus typed release, installed-artifact, version, platform, drift, provider, installed/running identity, deterministic asset selection, verified staging, M5.7–M5.10 update transactions including durable Studio self-update handoff, and M5.9A runtime reconciliation with managed-state fingerprints and exact local Gateway catalog identity; M5.2/M5.3 include separate read-only GitHub providers for project-owned and official upstream releases.
-- `realtime`: typed bounded event streams plus registry/discovery/update/reconciliation state events.
-- `web`: React + TypeScript + Vite operational dashboard with Registry/Discovery plus M5.11 Updates/Fleet inventory, transactions, reconciliation, and reconnect recovery.
-- `metrics`: reserved for later historical/request metrics.
-- `storage`: reserved for later SQLite-backed persistence.
+- `realtime`: typed bounded event streams plus registry/discovery/update/reconciliation/history invalidation and health events.
+- `web`: React + TypeScript + Vite operational dashboard with Registry/Discovery, Updates/Fleet controls, and M6 historical views.
+- `metrics`: M6 historical aggregation definitions and replay-safe bounded metric buckets; Gateway request telemetry is deferred to M7.
+- `storage`: M6 private SQLite history/audit store, migrations, bounded worker queues/readers, retention, backup and historical query projections.
 - `logging`: structured logging initialization.
 - `error`: shared typed error boundary.
 
@@ -161,7 +163,7 @@ M5.12 adds `TunnelUpdateManager`. Prepare accepts only a semantic version resolv
 
 A newer Tunnel version is promoted as a new release directory and `current` is atomically switched. A same-version target is intentionally allowed only for Tunnel as a verified force-reinstall/integrity-repair path: the active release is moved to transaction rollback material, the verified candidate replaces it, and the prior release is restored on failure. The launcher must remain bound lexically to `current/tunnel-client-runtime-cloudflared`, the canonical Tunnel working directory, and canonical config. Each owned spawn records process generation, resolved executable/config/working directory and runtime SHA-256; running activation requires a new generation whose evidence matches the activated bytes through the health window. A stopped Tunnel remains stopped. Every mutation is journaled under `runtime/studio/data/tunnel-update/` before destructive operations. Startup restores journaled uncommitted activations to the verified predecessor and prior owner state, while journal-less or ambiguous scratch is preserved and fails closed instead of being guessed or deleted.
 
-M5.12 closure evidence proves the incident-derived managed-drift repair/rollback sequence, official OpenAI v0.0.14 staging and force-reinstall on an isolated runtime, update/tamper/recovery matrices, repeated cleanup/soak checks, and full backend/UI/Fleet/release-build gates. The expected unauthenticated `13thx-mcp/{filesystem,git,exec,gateway,blender,studio,fleet}/releases/latest` endpoints still returned HTTP 404 on 2026-09-19. Therefore copied/controlled fixtures prove runtime mechanics, but they are not substituted for the remaining clean bootstrap and genuine published project-artifact transition required before `v0.5.0` publication.
+M5.12 closure evidence proves the incident-derived managed-drift repair/rollback sequence, official OpenAI v0.0.14 staging and force-reinstall on an isolated runtime, update/tamper/recovery matrices, repeated cleanup/soak checks, and full backend/UI/Fleet/release-build gates. The 2026-09-19 public-release 404 condition was later resolved: on 2026-09-21 `scripts/verify-m5-publication.py` qualified the complete darwin-arm64 project release set, source-less bootstrap, and Fleet 0.2.0 → 0.2.1 published transition. See `docs/milestone-5-status.md`.
 
 ## Persistent registry
 

@@ -4,7 +4,7 @@
 
 This guide describes the M5 runtime-host layout and the release-only bootstrap sequence. A runtime-only host must not require project source, Rust/Cargo, Node/pnpm, `target/`, or `node_modules` after deployment.
 
-> Current release note (2026-09-19): the M5 implementation is ready, but the expected public `13thx-mcp/*` project release endpoints currently return HTTP 404. Do not treat copied development-host binaries as a substitute for release-grade bootstrap proof.
+> Publication note (2026-09-21): M5 publication qualification passed for darwin-arm64 using the required published `13thx-mcp/*` artifacts, source-less bootstrap, and a published Fleet 0.2.0 → 0.2.1 transition. Copied development-host binaries remain unsuitable as release-grade bootstrap evidence.
 
 ## Required runtime layout
 

@@ -1,6 +1,6 @@
 # Security, bootstrap, migrations and operator behavior
 
-**Status:** proposed design. Existing M5 threat model and ownership remain normative; this document adds history-specific decisions, not a new remote-access security model.
+**Status:** accepted M6 security/operations design; final implementation disposition is **VERIFIED / CLOSED**. Existing M5 threat model and ownership remain normative; this document adds history-specific decisions, not a new remote-access security model.
 
 ## 1. Threat model and boundaries
 

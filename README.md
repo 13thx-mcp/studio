@@ -4,7 +4,7 @@ Local-first web control plane for safely discovering, registering, configuring, 
 
 ## Current status
 
-Milestone 6 — Persistence, Metrics & Auditability is implemented as `v0.6.0-alpha` and locally qualified. Final closure depends on independent M5 publication evidence; see `docs/milestone-6-status.md`.
+Milestone 6 — Persistence, Metrics & Auditability is **VERIFIED / CLOSED** as `v0.6.0-alpha`. Its full native darwin-arm64 qualification consumed independently qualified M5 publication evidence. The `v0.6.0-alpha` tag exists locally; pushing that tag or publishing a release remains a separate release action.
 
 Current capabilities include:
 
@@ -26,10 +26,12 @@ Current capabilities include:
 - REST lifecycle/registry/discovery APIs;
 - typed WebSocket runtime events and registry/discovery invalidations;
 - React/TypeScript dashboard with MCP, tunnel, Registry, and Discovery sections;
+- trusted release inventory, staged updates, rollback, Fleet reconciliation, and Studio/Tunnel update transactions;
+- SQLite-backed operational history, typed audit evidence, metrics aggregation, retention, and historical API/UI;
 - same-origin browser protection for privileged mutations and WebSocket upgrades;
 - loopback-only Studio bind.
 
-SQLite history/metrics/audit persistence, automatic restart/backoff, remote authentication/RBAC, public Studio exposure, and MCP gateway traffic telemetry remain later milestones.
+Automatic restart/backoff, remote authentication/RBAC, public Studio exposure, and Gateway-observed MCP request/usage telemetry remain later milestones. Historical persistence/metrics/auditability are part of the closed M6 baseline.
 
 ## Requirements
 
@@ -146,6 +148,8 @@ tunnel-client-runtime-cloudflared run --config <validated-config-file>
 ```
 
 The browser cannot supply a tunnel executable, config path, shell command, arbitrary argv, or PID. Tunnel secret references stay server-side and resolved values are redacted from tunnel logs before REST/WebSocket/dashboard publication.
+
+Studio rejects and removes tunnel-runtime authority overrides from `MCP_COMMAND`, `MCP_SERVER_URL`, and `CONTROL_PLANE_POLL_CHANNELS` when it starts the tunnel runtime. These keys cannot be reintroduced through `[tunnel.env]`; the validated tunnel configuration remains the sole MCP target and poll-channel authority.
 
 ## Build the dashboard
 

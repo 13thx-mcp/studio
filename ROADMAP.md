@@ -2,7 +2,7 @@
 
 > Scope: local-first control plane for MCP runtime lifecycle, configuration, secure tunnel lifecycle, release/update management, fleet state, observability, and operational safety.
 >
-> Current release baseline: **v0.4.0 — Registry, Configuration & Auto-Discovery complete**.
+> Current qualified code baseline: **v0.6.0-alpha — M6 Persistence, Metrics & Auditability VERIFIED / CLOSED**. M5 publication evidence is qualified; the local `v0.6.0-alpha` tag exists, while remote tag push/publication remain separate release actions.
 >
 > Current deployment model: project source repositories under `mcp-server/<project>`, flat Rust MCP executables under `mcp-server/bin`, and non-MCP runtime/config/state under `mcp-server/runtime`.
 >
@@ -93,9 +93,9 @@ A runtime-only host must update from verified release artifacts rather than by p
 
 ---
 
-# 2. Current Baseline — v0.4.0
+# 2. Historical Baseline — v0.4.0
 
-Milestones 0–4 are complete and form the current implementation baseline.
+Milestones 0–4 are complete and formed the v0.4.0 implementation baseline. The current qualified code baseline is v0.6.0-alpha as recorded at the top of this roadmap.
 
 ## Completed capabilities
 
@@ -416,7 +416,7 @@ Technology baseline:
 
 ## Milestones 0–4 — COMPLETE
 
-**Current released baseline:** `v0.4.0`
+**Historical released baseline:** `v0.4.0`
 
 See Section 2 and milestone status documents for closure evidence.
 
@@ -426,7 +426,7 @@ See Section 2 and milestone status documents for closure evidence.
 
 **Target:** `v0.5.0`
 
-**Implementation status (2026-09-19):** M5.1–M5.12 implemented and local/source-less fault verification passed. Release publication is blocked until the required public `13thx-mcp/*` project releases/checksum assets are available and clean published-artifact bootstrap/update proof can run.
+**Implementation status:** **COMPLETE / PUBLICATION QUALIFIED.** M5.1–M5.12 implementation and local/source-less fault verification passed on 2026-09-19; the independent darwin-arm64 publication qualification subsequently passed on 2026-09-21 with published project artifacts, source-less bootstrap, and a Fleet 0.2.0 → 0.2.1 transition. See `docs/milestone-5-status.md`.
 
 ### Goal
 
@@ -763,7 +763,7 @@ A source-less macOS host can be installed, inspected, updated, reconciled, resta
 
 **Target:** `v0.6.0-alpha`
 
-**Implementation status (2026-09-20):** M6.1–M6.8 production work is substantially implemented on `feature/m6` and local Rust/web/security/regression qualification is green. Final milestone closure remains BLOCKED only by the independent M5-dependent native package/publication evidence after clean-source qualification. The required native target is darwin-arm64. Current-host real storage-fault, crash-atomicity, two-process self-update, source-less package and binary-rollback qualification are green. See `docs/milestone-6-status.md`.
+**Implementation status (2026-09-21):** **VERIFIED / CLOSED.** M6.0–M6.8 passed full clean-source native darwin-arm64 qualification, including storage-fault, restart/recovery, source-less/runtime-only, retention, package/rollback and M5 regression gates. Independent M5 publication evidence was qualified and consumed by the closure runner. See `docs/milestone-6-status.md`.
 
 ### Goal
 
@@ -1728,8 +1728,8 @@ v0.1.0        Core Supervisor MVP                  COMPLETE
 v0.2.0        Web Dashboard MVP                    COMPLETE
 v0.3.0        Tunnel Management                    COMPLETE
 v0.4.0        Registry + Discovery                 COMPLETE
-v0.5.0        Runtime Distribution + Update Mgr    IMPLEMENTED / RELEASE BLOCKED
-v0.6.0-alpha  Persistence + Metrics + Audit
+v0.5.0        Runtime Distribution + Update Mgr    COMPLETE / PUBLICATION QUALIFIED
+v0.6.0-alpha  Persistence + Metrics + Audit          VERIFIED / CLOSED
 v0.7.0-beta   Gateway Coordination + Tool Safety
 v0.8.0-beta   Hardening + Auto-Update + Recovery
 v0.9.0-rc     Security + Upgrade Safety + RC
@@ -1742,17 +1742,8 @@ Semantic Versioning is required for Studio and all `13thx-mcp` component release
 
 # 16. Current Immediate Next Step
 
-M5 implementation is complete, but **`v0.5.0` release closure is blocked by unavailable public project-owned release artifacts**.
+**Milestone 7 — Gateway Coordination, Concurrency & Tool Safety** is the next implementation milestone.
 
-Required release-unblock sequence:
+M5 publication qualification and M6 closure are complete. Before M7 implementation begins, post-M6 hardening changes must keep the existing M5/M6 authority and recovery contracts green under the normal clean-tree quality/security qualification.
 
-```text
-1. Publish/restore stable 13thx-mcp project releases + SHA256SUMS.txt.
-2. Bootstrap a fresh source-less runtime only from those published artifacts plus official OpenAI Tunnel assets.
-3. Exercise a genuine published project version transition and rollback.
-4. Re-run the complete M5 backend/UI/Fleet/security/release gates.
-5. Bump Studio/web to v0.5.0 and prepare the release commit only after those proofs pass.
-6. Reconcile the M5 integration branch with current main, merge once with --no-ff, publish, delete the integration branch, then tag v0.5.0.
-```
-
-M6 implementation should not be treated as the released-baseline successor until this M5 publication gate is cleared. Do not enable unattended auto-update or periodic unattended reconciliation; those policies remain M8 scope after M7 request coordination, drain, concurrency, and outcome semantics are verified.
+M7 must start from the closed M6 authority split: SQLite remains historical evidence only; live request authority stays in Gateway/runtime owners; unattended auto-update/reconciliation remains M8 scope until M7 drain, concurrency, cancellation and unknown-outcome semantics are verified.

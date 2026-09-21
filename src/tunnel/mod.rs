@@ -40,6 +40,12 @@ struct TunnelRuntimeCommand {
     command: String,
 }
 
+pub(crate) const RESERVED_TUNNEL_RUNTIME_ENV: [&str; 3] = [
+    "MCP_COMMAND",
+    "MCP_SERVER_URL",
+    "CONTROL_PLANE_POLL_CHANNELS",
+];
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TunnelConfig {
     #[serde(default = "default_name")]
@@ -398,16 +404,7 @@ impl TunnelSupervisor {
         };
 
         let mut command = Command::new(&runtime_path);
-        command
-            .arg("run")
-            .arg("--config")
-            .arg(&config_path)
-            .current_dir(&working_dir)
-            .envs(&env)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
+        configure_tunnel_command(&mut command, &config_path, &working_dir, &env);
 
         let mut child = match command.spawn() {
             Ok(child) => child,
@@ -762,6 +759,28 @@ impl TunnelSupervisor {
     }
 }
 
+fn configure_tunnel_command(
+    command: &mut Command,
+    config_path: &Path,
+    working_dir: &Path,
+    env: &BTreeMap<String, String>,
+) {
+    command
+        .arg("run")
+        .arg("--config")
+        .arg(config_path)
+        .current_dir(working_dir)
+        .envs(env)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+
+    for key in RESERVED_TUNNEL_RUNTIME_ENV {
+        command.env_remove(key);
+    }
+}
+
 fn resolve_lexical(base_dir: &Path, path: &Path) -> PathBuf {
     if path.is_absolute() {
         path.to_path_buf()
@@ -1023,6 +1042,40 @@ fn send_kill(_pid: u32) -> StudioResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::{OsStr, OsString};
+
+    #[test]
+    fn tunnel_command_removes_all_runtime_authority_overrides_after_explicit_env() {
+        let mut command = Command::new("tunnel-client");
+        configure_tunnel_command(
+            &mut command,
+            Path::new("config.yaml"),
+            Path::new("."),
+            &BTreeMap::from([
+                ("CONTROL_PLANE_API_KEY".into(), "secret".into()),
+                ("MCP_COMMAND".into(), "attacker-command".into()),
+                ("MCP_SERVER_URL".into(), "https://example.invalid".into()),
+                ("CONTROL_PLANE_POLL_CHANNELS".into(), "shadow".into()),
+            ]),
+        );
+
+        let environment = command
+            .as_std()
+            .get_envs()
+            .map(|(key, value)| (key.to_owned(), value.map(ToOwned::to_owned)))
+            .collect::<BTreeMap<_, _>>();
+        for key in RESERVED_TUNNEL_RUNTIME_ENV {
+            assert_eq!(
+                environment.get(OsStr::new(key)),
+                Some(&None),
+                "{key} must remain removed even when supplied explicitly"
+            );
+        }
+        assert_eq!(
+            environment.get(OsStr::new("CONTROL_PLANE_API_KEY")),
+            Some(&Some(OsString::from("secret")))
+        );
+    }
 
     #[test]
     fn redacts_exact_secret_values() {
