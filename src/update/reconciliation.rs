@@ -2514,11 +2514,20 @@ tool_allowlist = []
         write_valid_launcher(root);
 
         let tunnel_runtime = runtime_root.join("tunnel-client/tunnel-client-runtime-cloudflared");
-        fs::copy(
-            "../runtime/tunnel-client/current/tunnel-client-runtime-cloudflared",
-            &tunnel_runtime,
-        )
-        .unwrap();
+        let deployed_tunnel_root = Path::new("../runtime/tunnel-client");
+        let versioned_tunnel_runtime =
+            deployed_tunnel_root.join("current/tunnel-client-runtime-cloudflared");
+        let legacy_tunnel_runtime = deployed_tunnel_root.join("tunnel-client-runtime-cloudflared");
+        let deployed_tunnel_runtime = if versioned_tunnel_runtime.is_file() {
+            versioned_tunnel_runtime
+        } else {
+            assert!(
+                legacy_tunnel_runtime.is_file(),
+                "Aira tunnel runtime is unavailable in both versioned and legacy-flat layouts"
+            );
+            legacy_tunnel_runtime
+        };
+        fs::copy(&deployed_tunnel_runtime, &tunnel_runtime).unwrap();
 
         let inventory = Arc::new(
             InventoryService::new(
