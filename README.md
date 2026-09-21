@@ -147,6 +147,8 @@ tunnel-client-runtime-cloudflared run --config <validated-config-file>
 
 The browser cannot supply a tunnel executable, config path, shell command, arbitrary argv, or PID. Tunnel secret references stay server-side and resolved values are redacted from tunnel logs before REST/WebSocket/dashboard publication.
 
+Studio rejects and removes tunnel-runtime authority overrides from `MCP_COMMAND`, `MCP_SERVER_URL`, and `CONTROL_PLANE_POLL_CHANNELS` when it starts the tunnel runtime. These keys cannot be reintroduced through `[tunnel.env]`; the validated tunnel configuration remains the sole MCP target and poll-channel authority.
+
 ## Build the dashboard
 
 ```bash

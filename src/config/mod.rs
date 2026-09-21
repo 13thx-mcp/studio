@@ -308,6 +308,11 @@ impl StudioConfig {
                     "tunnel environment variable name must not be empty".into(),
                 ));
             }
+            if crate::tunnel::RESERVED_TUNNEL_RUNTIME_ENV.contains(&key.as_str()) {
+                return Err(StudioError::Config(format!(
+                    "tunnel environment variable {key} is reserved for validated runtime authority"
+                )));
+            }
             match reference {
                 crate::tunnel::SecretReference::FromEnv { from_env }
                     if from_env.trim().is_empty() =>
@@ -378,6 +383,22 @@ mod tests {
         let mut config = StudioConfig::default();
         config.registry.path = PathBuf::new();
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_reserved_tunnel_runtime_environment_authority() {
+        for key in crate::tunnel::RESERVED_TUNNEL_RUNTIME_ENV {
+            let mut config = StudioConfig::default();
+            config.tunnel.env.insert(
+                key.into(),
+                crate::tunnel::SecretReference::FromEnv {
+                    from_env: "SAFE_SECRET_SOURCE".into(),
+                },
+            );
+            let error = config.validate().unwrap_err().to_string();
+            assert!(error.contains("reserved for validated runtime authority"));
+            assert!(error.contains(key));
+        }
     }
 
     #[test]
