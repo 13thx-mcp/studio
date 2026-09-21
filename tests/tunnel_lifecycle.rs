@@ -95,6 +95,65 @@ async fn start_stop_and_duplicate_start_are_safe() {
 }
 
 #[tokio::test]
+async fn spawned_tunnel_cannot_receive_reserved_authority_environment() {
+    let fixture = Fixture::new(
+        r#"#!/bin/sh
+if [ "${MCP_COMMAND+x}" = x ] || [ "${MCP_SERVER_URL+x}" = x ] || [ "${CONTROL_PLANE_POLL_CHANNELS+x}" = x ]; then
+  printf 'authority override leaked\n' >&2
+  exit 41
+fi
+touch authority-clean
+trap 'exit 0' TERM INT
+while :; do sleep 1; done
+"#,
+    );
+    let secret = fixture.root.join("authority-secret");
+    fs::write(&secret, "override").unwrap();
+    let supervisor = TunnelSupervisor::new(
+        TunnelConfig {
+            name: "Test tunnel".into(),
+            runtime: fixture.root.join("runtime.sh"),
+            working_dir: fixture.root.clone(),
+            config_file: fixture.root.join("config.yaml"),
+            env: BTreeMap::from([
+                (
+                    "MCP_COMMAND".into(),
+                    SecretReference::FromFile {
+                        from_file: secret.clone(),
+                    },
+                ),
+                (
+                    "MCP_SERVER_URL".into(),
+                    SecretReference::FromFile {
+                        from_file: secret.clone(),
+                    },
+                ),
+                (
+                    "CONTROL_PLANE_POLL_CHANNELS".into(),
+                    SecretReference::FromFile { from_file: secret },
+                ),
+            ]),
+        },
+        64,
+        Duration::from_secs(1),
+        PathBuf::from("/"),
+        EventHub::default(),
+    );
+
+    assert_eq!(
+        supervisor.start().await.unwrap().state,
+        TunnelState::Running
+    );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        fixture.root.join("authority-clean").is_file(),
+        "spawned tunnel observed a reserved authority environment variable"
+    );
+    assert_eq!(supervisor.status().await.state, TunnelState::Running);
+    supervisor.shutdown().await;
+}
+
+#[tokio::test]
 async fn restart_replaces_pid_and_increments_restart_count() {
     let fixture = Fixture::new(LONG_RUNNING);
     let supervisor = fixture.supervisor(EventHub::default());
