@@ -195,7 +195,7 @@ struct FleetRenderPlanProvider {
 impl RenderPlanProvider for FleetRenderPlanProvider {
     async fn render_plan(&self) -> StudioResult<DesiredPlan> {
         let fleet_root = self.catalog.install_path(ComponentId::Fleet)?;
-        let host_id = active_host_id(&fleet_root)?;
+        let (host_id, server_names, has_gateway_policy) = active_host(&fleet_root)?;
         let script = fleet_root.join("scripts/fleetctl.py");
         let metadata = fs::symlink_metadata(&script).map_err(|error| {
             StudioError::UpdateTransaction(format!(
@@ -249,11 +249,12 @@ impl RenderPlanProvider for FleetRenderPlanProvider {
                 detail: format!("Fleet render-plan returned invalid JSON: {error}"),
             }
         })?;
-        validate_render_plan(raw, &host_id, self.catalog.runtime_root())
+        let expected = expected_surfaces(&server_names, has_gateway_policy);
+        validate_render_plan(raw, &host_id, self.catalog.runtime_root(), &expected)
     }
 }
 
-fn active_host_id(fleet_root: &Path) -> StudioResult<String> {
+fn active_host(fleet_root: &Path) -> StudioResult<(String, BTreeSet<String>, bool)> {
     let hosts = fleet_root.join("hosts");
     let metadata = fs::symlink_metadata(&hosts)?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
@@ -299,13 +300,31 @@ fn active_host_id(fleet_root: &Path) -> StudioResult<String> {
             "Fleet active host filename does not match host_id".into(),
         ));
     }
-    Ok(host_id)
+    let servers = value
+        .get("servers")
+        .and_then(toml::Value::as_table)
+        .ok_or_else(|| StudioError::UpdateTransaction("Fleet servers table is missing".into()))?;
+    let mut server_names = BTreeSet::new();
+    for name in servers.keys() {
+        if !is_safe_server_name(name) {
+            return Err(StudioError::UpdateTransaction(
+                "Fleet server name is unsafe".into(),
+            ));
+        }
+        server_names.insert(name.clone());
+    }
+    let has_gateway_policy = value
+        .get("gateway")
+        .and_then(toml::Value::as_table)
+        .is_some_and(|gateway| gateway.contains_key("policy"));
+    Ok((host_id, server_names, has_gateway_policy))
 }
 
 fn validate_render_plan(
     raw: RawRenderPlan,
     expected_host: &str,
     trusted_runtime_root: &Path,
+    expected: &BTreeMap<String, (PathBuf, BTreeSet<String>)>,
 ) -> StudioResult<DesiredPlan> {
     if raw.schema_version != PLAN_SCHEMA_VERSION {
         return Err(StudioError::UpdateVerificationFailed {
@@ -333,7 +352,6 @@ fn validate_render_plan(
         });
     }
 
-    let expected = expected_surfaces();
     if raw.outputs.len() != expected.len() {
         return Err(StudioError::UpdateVerificationFailed {
             component: "reconciliation".into(),
@@ -410,51 +428,67 @@ fn validate_render_plan(
     })
 }
 
-fn expected_surfaces() -> BTreeMap<&'static str, (PathBuf, BTreeSet<String>)> {
-    BTreeMap::from([
-        (
-            "gateway.filesystem",
-            (
-                PathBuf::from("gateway/servers.d/filesystem.yaml"),
-                BTreeSet::from(["gateway_reload".into()]),
-            ),
-        ),
-        (
-            "gateway.git",
-            (
-                PathBuf::from("gateway/servers.d/git.yaml"),
-                BTreeSet::from(["gateway_reload".into()]),
-            ),
-        ),
-        (
-            "gateway.exec",
-            (
-                PathBuf::from("gateway/servers.d/exec.yaml"),
-                BTreeSet::from(["gateway_reload".into()]),
-            ),
-        ),
-        (
-            "gateway.policy",
-            (
-                PathBuf::from("gateway/gateway.yaml"),
-                BTreeSet::from(["gateway_reload".into()]),
-            ),
-        ),
-        (
-            "studio.config",
-            (
-                PathBuf::from("studio/studio.toml"),
-                BTreeSet::from(["studio_restart".into()]),
-            ),
-        ),
-        (
-            "tunnel.config",
-            (
-                PathBuf::from("tunnel-client/config.yaml"),
-                BTreeSet::from(["tunnel_restart".into()]),
-            ),
-        ),
-    ])
+fn expected_surfaces(
+    server_names: &BTreeSet<String>,
+    has_gateway_policy: bool,
+) -> BTreeMap<String, (PathBuf, BTreeSet<String>)> {
+    let mut expected = BTreeMap::new();
+    for name in server_names {
+        let surface = format!("gateway.{name}");
+        expected.insert(
+            surface.clone(),
+            expected_surface(&surface).expect("safe server name"),
+        );
+    }
+    for surface in ["studio.config", "tunnel.config"] {
+        expected.insert(
+            surface.into(),
+            expected_surface(surface).expect("fixed surface"),
+        );
+    }
+    if has_gateway_policy {
+        expected.insert(
+            "gateway.policy".into(),
+            expected_surface("gateway.policy").expect("fixed surface"),
+        );
+    }
+    expected
+}
+
+fn is_safe_server_name(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    (1..=64).contains(&bytes.len())
+        && value != "policy"
+        && bytes[0].is_ascii_alphanumeric()
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+fn expected_surface(surface: &str) -> Option<(PathBuf, BTreeSet<String>)> {
+    match surface {
+        "gateway.policy" => Some((
+            PathBuf::from("gateway/gateway.yaml"),
+            BTreeSet::from(["gateway_reload".into()]),
+        )),
+        "studio.config" => Some((
+            PathBuf::from("studio/studio.toml"),
+            BTreeSet::from(["studio_restart".into()]),
+        )),
+        "tunnel.config" => Some((
+            PathBuf::from("tunnel-client/config.yaml"),
+            BTreeSet::from(["tunnel_restart".into()]),
+        )),
+        _ => {
+            let name = surface.strip_prefix("gateway.")?;
+            is_safe_server_name(name).then(|| {
+                (
+                    PathBuf::from(format!("gateway/servers.d/{name}.yaml")),
+                    BTreeSet::from(["gateway_reload".into()]),
+                )
+            })
+        }
+    }
 }
 
 fn validated_relative_path(value: &str) -> StudioResult<PathBuf> {
@@ -1543,10 +1577,18 @@ fn trusted_surface_target(runtime_root: &Path, relative: &Path) -> StudioResult<
             detail: "managed runtime surface path is invalid".into(),
         });
     }
-    if !expected_surfaces()
-        .values()
-        .any(|(expected, _)| expected == relative)
-    {
+    let fixed = [
+        Path::new("gateway/gateway.yaml"),
+        Path::new("studio/studio.toml"),
+        Path::new("tunnel-client/config.yaml"),
+    ];
+    let gateway_server = relative.parent() == Some(Path::new("gateway/servers.d"))
+        && relative.extension().and_then(|value| value.to_str()) == Some("yaml")
+        && relative
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .is_some_and(is_safe_server_name);
+    if !fixed.contains(&relative) && !gateway_server {
         return Err(StudioError::UpdateVerificationFailed {
             component: "reconciliation".into(),
             detail: "managed runtime surface is not server-approved".into(),
@@ -1674,14 +1716,13 @@ fn validate_manifest_bytes(
     manifest: &ManagedStateManifest,
 ) -> StudioResult<()> {
     for (surface, record) in &manifest.surfaces {
-        let surfaces = expected_surfaces();
-        let Some((expected_path, _)) = surfaces.get(surface.as_str()) else {
+        let Some((expected_path, _)) = expected_surface(surface) else {
             return Err(StudioError::RollbackFailed {
                 component: "reconciliation".into(),
                 detail: "rollback manifest contains an unknown surface".into(),
             });
         };
-        if record.relative_path != path_to_string(expected_path)? {
+        if record.relative_path != path_to_string(&expected_path)? {
             return Err(StudioError::RollbackFailed {
                 component: "reconciliation".into(),
                 detail: "rollback manifest surface path mismatch".into(),
@@ -1689,7 +1730,7 @@ fn validate_manifest_bytes(
         }
         let desired = DesiredSurface {
             surface: surface.clone(),
-            relative_path: expected_path.clone(),
+            relative_path: expected_path,
             bytes: Vec::new(),
             sha256: record.sha256.clone(),
             effects: BTreeSet::new(),
@@ -2083,6 +2124,55 @@ mod tests {
             ),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn render_plan_validation_uses_active_host_server_set() {
+        let temp = TempDir::new().unwrap();
+        let runtime_root = temp.path().join("runtime");
+        fs::create_dir(&runtime_root).unwrap();
+        let server_names = BTreeSet::from([
+            "exec".to_owned(),
+            "filesystem".to_owned(),
+            "git".to_owned(),
+            "sonarqube".to_owned(),
+        ]);
+        let expected = expected_surfaces(&server_names, false);
+        let outputs = expected
+            .iter()
+            .map(|(surface, (relative_path, effects))| {
+                let bytes = format!("{surface}\n").into_bytes();
+                RawRenderOutput {
+                    surface: surface.clone(),
+                    relative_path: relative_path.to_string_lossy().into_owned(),
+                    sha256: sha256_bytes(&bytes),
+                    content_encoding: "base64".into(),
+                    content_b64: BASE64.encode(bytes),
+                    ownership: "fleet_managed".into(),
+                    effects: effects.iter().cloned().collect(),
+                }
+            })
+            .collect();
+        let raw = RawRenderPlan {
+            schema_version: PLAN_SCHEMA_VERSION,
+            host_id: "aira".into(),
+            runtime_root: runtime_root.to_string_lossy().into_owned(),
+            outputs,
+        };
+
+        let plan = validate_render_plan(raw, "aira", &runtime_root, &expected).unwrap();
+
+        assert_eq!(plan.outputs.len(), 6);
+        assert!(plan.outputs.contains_key("gateway.sonarqube"));
+        assert!(!plan.outputs.contains_key("gateway.policy"));
+    }
+
+    #[test]
+    fn server_names_cannot_escape_managed_gateway_directory() {
+        assert!(is_safe_server_name("sonarqube-mcp.v2"));
+        assert!(!is_safe_server_name("../studio"));
+        assert!(!is_safe_server_name("server/name"));
+        assert!(!is_safe_server_name(""));
     }
 
     fn fixture() -> (
