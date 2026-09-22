@@ -97,7 +97,7 @@ Remote-refresh publication guards prove these merge commits are not reachable fr
 - Filesystem `v0.2.0`;
 - Fleet `v0.3.0`.
 
-Local tagging remains distinct from publication/deployment. Main integration is complete. Gateway/Filesystem/Fleet release tags point at their qualified main commits; Studio `v0.7.0-beta` still points at pre-closure merge `1c5dac5` and requires deliberate local tag reconciliation before publication. Fresh remote publication guards confirm the qualified main commits and all four M7 tags remain unpublished. No push, public release or deployment is claimed here.
+Local tagging remains distinct from publication/deployment. Main integration is complete and all four M7 release tags have been reconciled to their qualified release commits. Fresh remote publication guards confirm the qualified release commits and all four M7 tags remain unpublished. No push, public release or deployment is claimed here.
 
 ## Current disposition
 
@@ -106,4 +106,5 @@ Local tagging remains distinct from publication/deployment. Main integration is 
 - M7.1–M7.8 implementation: qualified on the recorded commits.
 - M7.9 runtime-only and bounded-soak gaps discovered by closure audit: fixed/proved and integrated on main.
 - Final main integration: complete.
-- Local unpublished tag reconciliation: Gateway/Filesystem/Fleet aligned; Studio `v0.7.0-beta` pending.
+- Local unpublished tag reconciliation: complete for Studio/Gateway/Filesystem/Fleet.
+- Publication/deployment: pending explicit release action.

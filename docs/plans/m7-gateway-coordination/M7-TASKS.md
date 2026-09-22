@@ -1,6 +1,6 @@
 # M7 Dependency-Ordered Execution Checklist
 
-**State:** M7.0 FROZEN / P-01..P-09 CLOSED / M7.1–M7.8 IMPLEMENTED / M7.9 QUALIFIED / CLOSURE FIXES INTEGRATED ON MAIN / RELEASE PUBLICATION PENDING.
+**State:** M7.0 FROZEN / P-01..P-09 CLOSED / M7.1–M7.8 IMPLEMENTED / M7.9 QUALIFIED / CLOSURE FIXES INTEGRATED / LOCAL RELEASE TAGS RECONCILED / PUBLICATION PENDING.
 
 **P-01..P-09 closure checkpoint:**
 
@@ -8,7 +8,7 @@
 - Gateway protocol/control-socket evidence: `6397661` + `60a0c00`; implementation merge `5b886c9`; bounded-soak qualification `da432d7`; final qualified `main` `36aea90`;
 - Filesystem M7.4 implementation: `ec68a04`, version 0.2.0;
 - Fleet M7 policy implementation: `7bad5e2`, version 0.3.0; unrelated Sonar work remains isolated on its feature branch;
-- local release tags exist but are verified unpublished; push, release publication and deployment are not implied by this checkpoint.
+- local release tags are reconciled to the qualified release commits and verified unpublished; push, release publication and deployment are not implied by this checkpoint.
 
 ## M7.0 — Architecture, protocol and configuration freeze
 
