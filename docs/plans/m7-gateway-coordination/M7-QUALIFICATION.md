@@ -1,7 +1,7 @@
 # M7 Qualification and Closure Audit
 
 **Audit date:** 2026-09-22
-**Status:** IMPLEMENTATION QUALIFIED / CLOSURE FIXES INTEGRATED ON MAIN / RELEASE PUBLICATION PENDING
+**Status:** IMPLEMENTATION QUALIFIED / CLOSURE FIXES INTEGRATED / LOCAL RELEASE TAGS RECONCILED / PUBLICATION PENDING
 **Publication:** local release tags exist but are not published to `origin`; deployment is not claimed.
 
 ## Qualified implementation commits
@@ -118,7 +118,7 @@ Local release tags currently exist:
 
 Remote-refresh publication guards prove that all four M7 merge commits and all four tags are currently **unpublished** on `origin`.
 
-Main integration is complete for both post-tag closure fixes. Current local tag targets are now asymmetric: Gateway `v0.2.0` points at qualified `main` `36aea90`, Filesystem `v0.2.0` points at `ec68a04`, and Fleet `v0.3.0` points at `7bad5e2`; Studio `v0.7.0-beta` still points at pre-closure merge `1c5dac5` rather than qualified `main` `3423d8e`. All four tags and the qualified main commits were rechecked against `origin` and remain unpublished. Studio tag reconciliation is therefore the only local tag correction still required before release publication. No push, public release, or deployment is part of this audit.
+Main integration is complete for all post-tag closure fixes. All four local release tags have now been reconciled to their qualified release commits: Studio `v0.7.0-beta`, Gateway `v0.2.0`, Filesystem `v0.2.0`, and Fleet `v0.3.0`. Remote publication guards were rerun after reconciliation and confirm the release commits and tags remain unpublished on `origin`. No push, public release, or deployment is part of this audit.
 
 ## Closure disposition
 
@@ -130,4 +130,5 @@ Main integration is complete for both post-tag closure fixes. Current local tag 
 - R49 clean provenance: PASS.
 - R50 implementation/tag/publication state separation: PASS.
 - Final implementation/main integration readiness: **PASS**.
-- Final release/tag publication readiness: **PENDING Studio `v0.7.0-beta` local tag reconciliation and an explicit publication/deployment decision**.
+- Final local release/tag readiness: **PASS**.
+- Publication/deployment readiness: **PENDING explicit push/release/deploy decision**.
