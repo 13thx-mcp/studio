@@ -37,3 +37,10 @@ export function actionEnabled(
   if (action === "stop") return status.state === "running";
   return status.state === "running" || status.state === "stopped" || status.state === "failed";
 }
+
+export function tunnelActionEnabled(
+  status: Pick<TunnelStatus, "state" | "runtime_available">,
+  action: "start" | "stop" | "restart",
+): boolean {
+  return actionEnabled(status, action) && (action === "stop" || status.runtime_available);
+}

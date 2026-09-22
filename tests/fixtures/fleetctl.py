@@ -626,7 +626,7 @@ def tunnel_config_text(host: dict[str, Any]) -> str:
     server_dir = runtime_root / "gateway" / "servers.d"
     lines = [
         "config_version: 1", "",
-        "control_plane:", "  base_url: \"https://api.openai.com\"", "  poll_channels:", "    - main", "",
+        "control_plane:", f"  tunnel_id: {yaml_string(str(host['host_id']))}", "  base_url: \"https://api.openai.com\"", "  poll_channels:", "    - main", "",
         "health:", "  listen_addr: \"127.0.0.1:18080\"", "",
         "admin_ui:", "  open_browser: false", "",
         "log:", "  level: \"info\"", "  format: \"struct-text\"", "",
@@ -669,7 +669,9 @@ def deploy_control(host_name: str) -> int:
     destination = Path(host["runtime_root"]).resolve() / "fleet"
     (destination / "scripts").mkdir(parents=True, exist_ok=True)
     (destination / "hosts").mkdir(parents=True, exist_ok=True)
+    (destination / "launchers").mkdir(parents=True, exist_ok=True)
     copies = [
+        (FLEET_DIR / "VERSION", destination / "VERSION"),
         (FLEET_CONFIG, destination / "fleet.toml"),
         (Path(__file__).resolve(), destination / "scripts" / "fleetctl.py"),
         (host_path, destination / "hosts" / host_path.name),
@@ -678,7 +680,29 @@ def deploy_control(host_name: str) -> int:
     for source, target in copies:
         shutil.copy2(source, target)
     (destination / "scripts" / "fleetctl.py").chmod(0o755)
-    print(f"DEPLOYED: fleet control -> {destination}")
+
+    bin_root = Path(host["bin_root"]).resolve()
+    bin_root.mkdir(parents=True, exist_ok=True)
+    installed_launchers: list[str] = []
+    for name in referenced_launchers(host):
+        source = launcher_source(name)
+        bundled = destination / "launchers" / name
+        shutil.copy2(source, bundled)
+        bundled.chmod(0o755)
+        target = bin_root / name
+        fd, temp_name = tempfile.mkstemp(prefix=f".{name}.", dir=bin_root)
+        os.close(fd)
+        try:
+            shutil.copy2(source, temp_name)
+            os.chmod(temp_name, 0o755)
+            os.replace(temp_name, target)
+        finally:
+            if os.path.exists(temp_name):
+                os.unlink(temp_name)
+        installed_launchers.append(name)
+
+    suffix = f"; launchers={','.join(installed_launchers)}" if installed_launchers else ""
+    print(f"DEPLOYED: fleet control -> {destination}{suffix}")
     return 0
 
 
