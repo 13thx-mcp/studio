@@ -1,7 +1,7 @@
 # M8 Planning Validation
 
 **Review date:** 2026-09-22
-**State:** M8.0 VERIFIED / CONTRACT FROZEN / M8.1 READY
+**State:** M8.0 VERIFIED / M8.1 VERIFIED-CLOSED / M8.2 + M8.3 READY
 
 ## Package completeness
 
@@ -90,7 +90,7 @@ M8 does require narrow compatibility/capability checks necessary for its own saf
 
 ### Ready now
 
-M8.1 Automation Foundation may begin from ADR 0037/0038/0043 and the frozen source-spike baseline.
+M8.2 Health/Restart/Gateway Safety and M8.3 Check/Notify/Auto-Prepare may begin from the qualified M8.1 foundation. M8.1 exact-source qualification is recorded in `M8.1-QUALIFICATION.md`.
 
 ### Still blocked
 
@@ -110,4 +110,4 @@ Automatic activation (M8.4) remains hard-blocked until the implemented M8.2/M8.6
 
 ## Review conclusion
 
-M8.0 is closed as a contract/design gate. M8.1 Automation Foundation is the next executable package; the dependency graph continues to prevent automatic activation from being implemented before its health/hazard prerequisites.
+M8.0 and M8.1 are closed. M8.2 and M8.3 are the next executable packages; the dependency graph continues to prevent automatic activation from being implemented before M8.2/M8.6 health/hazard prerequisites qualify.

@@ -232,7 +232,33 @@ pub struct RuntimeOperationCoordinator {
     state: StdMutex<RuntimeOperationState>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeOperationSnapshot {
+    pub control_owner: Option<String>,
+    pub components: BTreeMap<ComponentId, String>,
+}
+
+impl RuntimeOperationSnapshot {
+    pub fn is_idle(&self) -> bool {
+        self.control_owner.is_none() && self.components.is_empty()
+    }
+}
+
 impl RuntimeOperationCoordinator {
+    pub fn snapshot(&self) -> StudioResult<RuntimeOperationSnapshot> {
+        let state = self.state.lock().map_err(|_| {
+            StudioError::UpdateTransaction("runtime operation lock poisoned".into())
+        })?;
+        Ok(RuntimeOperationSnapshot {
+            control_owner: state.control_owner.map(ToOwned::to_owned),
+            components: state
+                .components
+                .iter()
+                .map(|(component, owner)| (*component, (*owner).to_owned()))
+                .collect(),
+        })
+    }
+
     pub fn acquire_control(
         self: &Arc<Self>,
         owner: &'static str,
@@ -773,6 +799,34 @@ mod tests {
             )
             .unwrap(),
         )
+    }
+
+    #[test]
+    fn runtime_operation_snapshot_reports_current_owners_without_waiting() {
+        let catalog = catalog();
+        let coordinator = catalog.runtime_operations();
+        assert!(coordinator.snapshot().unwrap().is_idle());
+
+        let git = coordinator
+            .acquire_component(ComponentId::Git, "git_snapshot")
+            .unwrap();
+        let snapshot = coordinator.snapshot().unwrap();
+        assert_eq!(
+            snapshot
+                .components
+                .get(&ComponentId::Git)
+                .map(String::as_str),
+            Some("git_snapshot")
+        );
+        assert!(snapshot.control_owner.is_none());
+
+        drop(git);
+        let control = coordinator.acquire_control("control_snapshot").unwrap();
+        let snapshot = coordinator.snapshot().unwrap();
+        assert_eq!(snapshot.control_owner.as_deref(), Some("control_snapshot"));
+        assert!(snapshot.components.is_empty());
+        drop(control);
+        assert!(coordinator.snapshot().unwrap().is_idle());
     }
 
     #[test]

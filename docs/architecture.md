@@ -27,7 +27,7 @@ A proposed post-M7 Workspace Skill Runtime is documented in ADR 0036 and `docs/p
 - `web`: React + TypeScript + Vite operational dashboard with Registry/Discovery, Updates/Fleet controls, and M6 historical views.
 - `metrics`: M6 historical aggregation definitions and replay-safe bounded metric buckets plus sanitized M7 Gateway request/catalog/recovery history projections.
 - `storage`: M6 private SQLite history/audit store, migrations, bounded worker queues/readers, retention, backup and historical query projections.
-- `automation` (M8 planned, not yet implemented): single background policy/scheduling owner with durable bounded state, SafetyGate and circuit/deferral semantics from ADR 0037–0044.
+- `automation`: M8.1 single background policy/scheduling foundation with bounded durable state, UTC schedule/circuit/deferral primitives, RuntimeOperationCoordinator observation and shared audit admission. It currently performs no provider check, staging, restart, activation or reconciliation mutation; later M8 packages attach those typed handlers behind the frozen SafetyGate.
 - `logging`: structured logging initialization.
 - `error`: shared typed error boundary.
 

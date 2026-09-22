@@ -8,9 +8,11 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use mcp_studio::{
     api::{self, AppState},
+    automation::AutomationController,
     config::{LoadedConfigIdentity, StudioConfig},
     discovery::DiscoveryService,
     logging,
+    operation::OperationService,
     realtime::EventHub,
     registry::Registry,
     storage::HistoryHandle,
@@ -63,11 +65,16 @@ async fn main() -> Result<()> {
         None => (StudioConfig::default(), LoadedConfigIdentity::builtin()),
     };
     config.validate()?;
+    let automation_policy_fingerprint = loaded_config_identity
+        .sha256
+        .clone()
+        .unwrap_or(config.automation.fingerprint()?);
 
     let base_dir = std::env::current_dir()?;
     let (source_root, bin_root, runtime_root) = config.updates.resolve_roots(&base_dir);
     let activation_runtime_root = runtime_root.clone();
     let history = HistoryHandle::initialize(&runtime_root);
+    let operations = OperationService::new(history.clone());
     if let Some(Command::History { command }) = cli.command {
         match command {
             HistoryCommand::Backup => {
@@ -200,6 +207,20 @@ async fn main() -> Result<()> {
         "runtime reconciliation startup check completed"
     );
 
+    let automation = Arc::new(AutomationController::new(
+        config.automation.clone(),
+        activation_runtime_root.clone(),
+        Some(automation_policy_fingerprint),
+        runtime_operations.clone(),
+        operations.clone(),
+    ));
+    if let Some(blocker) = automation.blocker().await {
+        tracing::warn!(
+            ?blocker,
+            "M8 automation foundation is observation-only and destructive automation is blocked"
+        );
+    }
+
     let addr: SocketAddr = config.server.listen_addr.parse()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
     if write_activation_ready_proof_from_env(&activation_runtime_root, &activation_config_identity)?
@@ -209,6 +230,8 @@ async fn main() -> Result<()> {
     if let Err(error) = history.mark_run_ready() {
         tracing::warn!(history_error = %error, "could not persist Studio ready observation");
     }
+    let automation_shutdown = Arc::new(Notify::new());
+    let automation_task = tokio::spawn(automation.clone().run(automation_shutdown.clone()));
     tokio::spawn(ingest_gateway_history(
         history.clone(),
         gateway_history_client,
@@ -243,6 +266,7 @@ async fn main() -> Result<()> {
     let shutdown_supervisor = supervisor.clone();
     let shutdown_tunnel = tunnel.clone();
     let shutdown_history = history.clone();
+    let shutdown_automation = automation_shutdown.clone();
     let self_update_shutdown = Arc::new(Notify::new());
     let shutdown_request = self_update_shutdown.clone();
     let app = api::router(AppState {
@@ -257,6 +281,7 @@ async fn main() -> Result<()> {
         tunnel_updates,
         reconciliation,
         runtime_operations,
+        operations,
         history: history.clone(),
         shutdown: self_update_shutdown,
         registry_events,
@@ -267,6 +292,16 @@ async fn main() -> Result<()> {
                 _ = shutdown_signal() => {}
                 _ = shutdown_request.notified() => {
                     tracing::info!("Studio self-update requested graceful shutdown");
+                }
+            }
+            shutdown_automation.notify_waiters();
+            match tokio::time::timeout(Duration::from_secs(1), automation_task).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, "automation controller task failed during shutdown");
+                }
+                Err(_) => {
+                    tracing::warn!("automation controller did not stop within shutdown bound");
                 }
             }
             shutdown_tunnel.shutdown().await;

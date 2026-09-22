@@ -4,7 +4,7 @@
 
 MCP Studio is a privileged local control plane. The closed M7 baseline can supervise registered MCP/tunnel processes, discover/select/stage trusted releases, transactionally update generic MCP/Gateway/Fleet/Tunnel/Studio runtime units, reconcile Fleet-managed runtime config, persist bounded audit/history evidence, and operate a Gateway that owns bounded request admission/drain/no-replay outcomes, per-child recovery and sanitized request telemetry.
 
-M8.0 has accepted contracts for bounded unattended checks/preparation/activation/reconciliation/restart and recovery, but those production automation paths are not active until M8.1–M8.8 implementation/qualification. M6 SQLite history/metrics/audit persistence remains non-authoritative for live control/recovery. Remote authentication/RBAC remains M9 scope.
+M8.0 contracts are frozen and M8.1 automation foundation is implemented/qualified: manual-safe config defaults, confined bounded policy state, scheduler/circuit/deferral primitives, coordinator introspection and shared audit admission are active. Provider checking, staging, automatic restart, activation and reconciliation mutation remain disabled until their later M8 packages qualify. M6 SQLite history/metrics/audit persistence remains non-authoritative for live control/recovery. Remote authentication/RBAC remains M9 scope.
 
 ## Assets
 
@@ -34,9 +34,9 @@ M8.0 has accepted contracts for bounded unattended checks/preparation/activation
 13. Fleet host profile schema v3 ↔ rendered Studio automation configuration; Fleet remains desired-state authority for Fleet-managed policy.
 14. Git MCP guarded release control ↔ SemVer prerelease tag identity and exact main/release evidence.
 
-## M8.0 accepted security controls — not active until implemented
+## M8 automation security controls
 
-ADR 0037–0045 require the following before unattended mutation can be enabled:
+ADR 0037–0045 require the following before unattended mutation can be enabled. M8.1 implements only the configuration/state/scheduler/audit-admission foundation; remaining bullets stay gating requirements for later packages:
 
 - missing M8 config defaults to manual/disabled behavior;
 - AutomationController is the only Studio background policy owner and never persists a replayable mutation queue;

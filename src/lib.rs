@@ -1,7 +1,9 @@
 pub mod api;
+pub mod automation;
 pub mod config;
 pub mod discovery;
 pub mod metrics;
+pub mod operation;
 pub mod realtime;
 pub mod registry;
 pub mod storage;

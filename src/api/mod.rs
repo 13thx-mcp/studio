@@ -22,6 +22,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use crate::{
     discovery::{DiscoveredProject, DiscoveryService, RegisterDiscoveryRequest},
     error::StudioError,
+    operation::OperationService,
     realtime::{EventHub, StudioEvent},
     registry::{RegistryEntryView, RegistryUpdate},
     storage::{
@@ -50,6 +51,7 @@ pub struct AppState {
     pub tunnel_updates: Arc<TunnelUpdateManager>,
     pub reconciliation: Arc<RuntimeReconciler>,
     pub runtime_operations: Arc<RuntimeOperationCoordinator>,
+    pub operations: OperationService,
     pub history: HistoryHandle,
     pub shutdown: Arc<Notify>,
     pub registry_events: EventHub,
@@ -165,19 +167,11 @@ async fn admit_local_operation(
     subject_kind: SubjectKind,
     action: HistoryAction,
 ) -> Result<OperationContext, ApiError> {
-    let history = state.history.clone();
-    tokio::task::spawn_blocking(move || {
-        history
-            .admit_operation(subject_kind, action, ActorKind::LocalOperator)
-            .map(|(context, _)| context)
-    })
-    .await
-    .map_err(|error| {
-        ApiError::from(StudioError::History(format!(
-            "history admission task failed: {error}"
-        )))
-    })?
-    .map_err(Into::into)
+    state
+        .operations
+        .admit(subject_kind, action, ActorKind::LocalOperator)
+        .await
+        .map_err(Into::into)
 }
 
 async fn audited_result_response<T: Serialize + Send + 'static>(
@@ -201,28 +195,13 @@ async fn audited_result_response<T: Serialize + Send + 'static>(
     };
 
     let operation_id = context.operation_id();
-    let terminal_context = context.clone();
-    let history = state.history.clone();
-    let audit_result = tokio::task::spawn_blocking(move || {
-        history.finish_operation(&terminal_context, outcome, error_code)
-    })
-    .await;
-
-    let audit_status = match audit_result {
-        Ok(Ok(_)) => "complete",
-        Ok(Err(error)) => {
-            tracing::warn!(
-                operation_id = %operation_id,
-                history_error = %error,
-                "domain operation completed with incomplete audit terminal evidence"
-            );
-            "incomplete"
-        }
+    let audit_status = match state.operations.finish(context, outcome, error_code).await {
+        Ok(_) => "complete",
         Err(error) => {
             tracing::warn!(
                 operation_id = %operation_id,
                 history_error = %error,
-                "history terminal receipt task failed after domain effect"
+                "domain operation completed with incomplete audit terminal evidence"
             );
             "incomplete"
         }
@@ -958,6 +937,7 @@ impl IntoResponse for ApiError {
             | StudioError::PackageValidationFailed { .. }
             | StudioError::BinaryVersionValidationFailed { .. } => StatusCode::BAD_GATEWAY,
             StudioError::History(_)
+            | StudioError::Automation(_)
             | StudioError::Process(_)
             | StudioError::InstalledIdentity(_)
             | StudioError::StagingFailure(_)
@@ -1010,6 +990,7 @@ fn public_error_message(error: &StudioError) -> String {
             "binary_version_validation_failed".into()
         }
         StudioError::History(_) => "history_storage_failed".into(),
+        StudioError::Automation(_) => "automation_failed".into(),
         StudioError::StagingFailure(_) => "staging_failed".into(),
         StudioError::InstalledIdentity(_) => "installed_identity_error".into(),
         StudioError::UpdateTransaction(_) => "update_transaction_failed".into(),
@@ -1131,6 +1112,8 @@ mod tests {
             )
             .unwrap(),
         );
+        let history = crate::storage::HistoryHandle::initialize(&root.join("runtime"));
+        let operations = crate::operation::OperationService::new(history.clone());
         super::router(super::AppState {
             supervisor,
             discovery: Arc::new(discovery),
@@ -1143,7 +1126,8 @@ mod tests {
             tunnel_updates,
             reconciliation,
             runtime_operations,
-            history: crate::storage::HistoryHandle::initialize(&root.join("runtime")),
+            operations,
+            history,
             shutdown: Arc::new(Notify::new()),
             registry_events: events,
         })
