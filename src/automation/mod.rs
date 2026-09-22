@@ -134,6 +134,7 @@ pub enum OutcomeCode {
     Transitional,
     PolicyDisabled,
     CapabilityUnavailable,
+    CircuitOpen,
     ClockAnomaly,
     StateUnavailable,
 }
@@ -814,29 +815,74 @@ impl AutomationController {
             due
         };
 
-        if due.contains(&ScheduleClass::UpdateCheck)
-            && let Err(error) = self.run_update_policy().await
-        {
-            let mut state = self.state.lock().await;
-            let circuit = state.circuits.entry("update_check".into()).or_default();
-            circuit.record_failure(
-                now_ms,
-                CircuitPolicy {
-                    failure_threshold: self.config.updates.max_consecutive_failures,
-                    cooldown_ms: self
-                        .config
-                        .updates
-                        .circuit_cooldown_seconds
-                        .saturating_mul(1000),
-                },
-            );
-            state.last_outcome = Some(AutomationOutcome {
-                kind: OutcomeKind::Failure,
-                code: OutcomeCode::DomainFailure,
-                observed_at_ms: now_ms,
-            });
-            self.store.persist(&state)?;
-            tracing::warn!(%error, "automatic update policy evaluation failed");
+        if due.contains(&ScheduleClass::UpdateCheck) {
+            let admitted = {
+                let mut state = self.state.lock().await;
+                let circuit = state.circuits.entry("update_check".into()).or_default();
+                let admitted = circuit.ready_for_probe(now_ms);
+                if !admitted {
+                    if let Some(retry) = circuit.retry_not_before_ms
+                        && let Some(schedule) = state.schedules.get_mut(&ScheduleClass::UpdateCheck)
+                    {
+                        schedule.next_due_ms = retry;
+                    }
+                    state.last_outcome = Some(AutomationOutcome {
+                        kind: OutcomeKind::Deferred,
+                        code: OutcomeCode::CircuitOpen,
+                        observed_at_ms: now_ms,
+                    });
+                }
+                state.last_persisted_wall_ms = now_ms.max(state.last_persisted_wall_ms);
+                self.store.persist(&state)?;
+                admitted
+            };
+
+            if admitted {
+                match self.run_update_policy().await {
+                    Ok(()) => {
+                        let mut state = self.state.lock().await;
+                        state
+                            .circuits
+                            .entry("update_check".into())
+                            .or_default()
+                            .record_success();
+                        state.last_outcome = Some(AutomationOutcome {
+                            kind: OutcomeKind::Success,
+                            code: OutcomeCode::Completed,
+                            observed_at_ms: now_ms,
+                        });
+                        self.store.persist(&state)?;
+                    }
+                    Err(error) => {
+                        let mut state = self.state.lock().await;
+                        let circuit = state.circuits.entry("update_check".into()).or_default();
+                        circuit.record_failure(
+                            now_ms,
+                            CircuitPolicy {
+                                failure_threshold: self.config.updates.max_consecutive_failures,
+                                cooldown_ms: self
+                                    .config
+                                    .updates
+                                    .circuit_cooldown_seconds
+                                    .saturating_mul(1000),
+                            },
+                        );
+                        if let Some(retry) = circuit.retry_not_before_ms
+                            && let Some(schedule) =
+                                state.schedules.get_mut(&ScheduleClass::UpdateCheck)
+                        {
+                            schedule.next_due_ms = retry;
+                        }
+                        state.last_outcome = Some(AutomationOutcome {
+                            kind: OutcomeKind::Failure,
+                            code: OutcomeCode::DomainFailure,
+                            observed_at_ms: now_ms,
+                        });
+                        self.store.persist(&state)?;
+                        tracing::warn!(%error, "automatic update policy evaluation failed");
+                    }
+                }
+            }
         }
 
         if !due.is_empty() {
@@ -844,9 +890,10 @@ impl AutomationController {
             let mut state = self.state.lock().await;
             if operation_snapshot.is_idle() {
                 state.deferrals.remove("runtime_operation");
-                if state.last_outcome.is_none()
-                    || !due.contains(&ScheduleClass::UpdateCheck)
-                    || self.update_service.is_none()
+                if state
+                    .last_outcome
+                    .as_ref()
+                    .is_none_or(|outcome| outcome.observed_at_ms != now_ms)
                 {
                     state.last_outcome = Some(AutomationOutcome {
                         kind: OutcomeKind::Deferred,
@@ -1186,6 +1233,83 @@ mod tests {
         assert!(
             state.schedules[&ScheduleClass::Health].next_due_ms >= 40_000,
             "coordinator deferral must push the due schedule to bounded retry"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_check_circuit_blocks_until_cooldown_then_resets_after_probe() {
+        let root = tempfile::tempdir().unwrap();
+        let config = AutomationConfig {
+            startup_grace_seconds: 0,
+            updates: crate::config::UpdateAutomationConfig {
+                policy: AutomationPolicy::NotifyOnly,
+                max_consecutive_failures: 1,
+                circuit_cooldown_seconds: 60,
+                ..crate::config::UpdateAutomationConfig::default()
+            },
+            ..AutomationConfig::default()
+        };
+
+        let clock = Arc::new(FakeClock::new(10_000));
+        let controller = AutomationController::with_clock(
+            config,
+            root.path().to_owned(),
+            Some("policy".into()),
+            Arc::new(RuntimeOperationCoordinator::default()),
+            test_operation_service(root.path()),
+            clock.clone(),
+        );
+
+        {
+            let mut state = controller.state.lock().await;
+            let circuit = state.circuits.entry("update_check".into()).or_default();
+            circuit.record_failure(
+                10_000,
+                CircuitPolicy {
+                    failure_threshold: 1,
+                    cooldown_ms: 60_000,
+                },
+            );
+            state
+                .schedules
+                .get_mut(&ScheduleClass::UpdateCheck)
+                .unwrap()
+                .next_due_ms = 10_000;
+            controller.store.persist(&state).unwrap();
+        }
+
+        controller.tick().await.unwrap();
+        let blocked = controller.state().await;
+        assert_eq!(blocked.circuits["update_check"].phase, CircuitPhase::Open);
+        assert_eq!(
+            blocked.last_outcome,
+            Some(AutomationOutcome {
+                kind: OutcomeKind::Deferred,
+                code: OutcomeCode::CircuitOpen,
+                observed_at_ms: 10_000,
+            })
+        );
+        assert_eq!(
+            blocked.schedules[&ScheduleClass::UpdateCheck].next_due_ms,
+            70_000
+        );
+        drop(blocked);
+
+        clock.set(70_000);
+        controller.tick().await.unwrap();
+        let recovered = controller.state().await;
+        assert_eq!(
+            recovered.circuits["update_check"].phase,
+            CircuitPhase::Closed
+        );
+        assert_eq!(recovered.circuits["update_check"].consecutive_failures, 0);
+        assert_eq!(
+            recovered.last_outcome,
+            Some(AutomationOutcome {
+                kind: OutcomeKind::Success,
+                code: OutcomeCode::Completed,
+                observed_at_ms: 70_000,
+            })
         );
     }
 
