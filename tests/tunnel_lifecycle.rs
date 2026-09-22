@@ -5,15 +5,20 @@ use std::{
     fs,
     os::unix::fs::PermissionsExt,
     path::PathBuf,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
 use mcp_studio::{
     error::StudioError,
     realtime::{EventHub, StudioEvent},
+    reliability::{RestartOwnerContext, RestartPolicy},
     storage::HistoryHandle,
     tunnel::{SecretReference, TunnelConfig, TunnelState, TunnelStatus, TunnelSupervisor},
+    update::RuntimeOperationCoordinator,
 };
 
 static NEXT_FIXTURE_ID: AtomicU64 = AtomicU64::new(1);
@@ -56,6 +61,45 @@ impl Fixture {
             events,
         )
     }
+
+    fn supervisor_with_restart(
+        &self,
+        events: EventHub,
+    ) -> (TunnelSupervisor, Arc<RuntimeOperationCoordinator>) {
+        let history = HistoryHandle::initialize(&self.root.join("history-runtime"));
+        history
+            .start_run(uuid::Uuid::new_v4(), "m8-tunnel-restart-test", None)
+            .unwrap();
+        history.mark_run_ready().unwrap();
+        let coordinator = Arc::new(RuntimeOperationCoordinator::default());
+        let policy = RestartPolicy {
+            enabled: true,
+            max_attempts: 3,
+            stability_window_ms: 100,
+            initial_backoff_ms: 10,
+            max_backoff_ms: 40,
+            cooldown_ms: 100,
+        };
+        (
+            TunnelSupervisor::new_with_history_and_restart(
+                TunnelConfig {
+                    name: "Test tunnel".into(),
+                    runtime: self.root.join("runtime.sh"),
+                    working_dir: self.root.clone(),
+                    config_file: self.root.join("config.yaml"),
+                    health_url_file: None,
+                    env: BTreeMap::new(),
+                },
+                64,
+                Duration::from_secs(1),
+                PathBuf::from("/"),
+                events,
+                history,
+                RestartOwnerContext::new(policy, coordinator.clone()),
+            ),
+            coordinator,
+        )
+    }
 }
 
 impl Drop for Fixture {
@@ -69,6 +113,56 @@ trap 'exit 0' TERM INT
 printf 'tunnel ready\n'
 while :; do sleep 1; done
 "#;
+
+#[tokio::test]
+async fn m8_tunnel_crash_schedules_and_processes_restart() {
+    let fixture = Fixture::new("#!/bin/sh\nexit 42\n");
+    let (supervisor, _coordinator) = fixture.supervisor_with_restart(EventHub::default());
+
+    supervisor.start().await.unwrap();
+    let failed = wait_for_state(&supervisor, TunnelState::Failed).await;
+    assert!(failed.desired_running);
+    assert_eq!(failed.consecutive_restart_failures, 1);
+    let due = failed.retry_at_ms.unwrap();
+
+    supervisor.process_due_restart(due).await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let after = supervisor.status().await;
+    assert!(after.restart_count >= 1);
+    assert!(after.consecutive_restart_failures >= 1);
+}
+
+#[tokio::test]
+async fn m8_tunnel_explicit_stop_suppresses_restart_intent() {
+    let fixture = Fixture::new(LONG_RUNNING);
+    let (supervisor, _coordinator) = fixture.supervisor_with_restart(EventHub::default());
+    supervisor.start().await.unwrap();
+
+    let stopped = supervisor.stop().await.unwrap();
+    assert!(!stopped.desired_running);
+    assert!(stopped.retry_at_ms.is_none());
+    assert!(supervisor.next_restart_due_ms().await.is_none());
+}
+
+#[tokio::test]
+async fn m8_tunnel_runtime_operation_conflict_defers_without_failure_increment() {
+    let fixture = Fixture::new("#!/bin/sh\nexit 42\n");
+    let (supervisor, coordinator) = fixture.supervisor_with_restart(EventHub::default());
+    supervisor.start().await.unwrap();
+    let failed = wait_for_state(&supervisor, TunnelState::Failed).await;
+    let due = failed.retry_at_ms.unwrap();
+    let lease = coordinator.acquire_control("m8_tunnel_busy").unwrap();
+
+    supervisor.process_due_restart(due).await;
+    let deferred = supervisor.status().await;
+    assert_eq!(
+        deferred.consecutive_restart_failures,
+        failed.consecutive_restart_failures
+    );
+    assert_eq!(deferred.restart_count, failed.restart_count);
+    assert!(deferred.retry_at_ms.unwrap() > due);
+    drop(lease);
+}
 
 #[tokio::test]
 async fn start_stop_and_duplicate_start_are_safe() {

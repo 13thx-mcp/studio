@@ -20,6 +20,8 @@ use crate::{
     config::{AutomationConfig, AutomationPolicy},
     error::{StudioError, StudioResult},
     operation::OperationService,
+    supervisor::Supervisor,
+    tunnel::TunnelSupervisor,
     update::RuntimeOperationCoordinator,
 };
 
@@ -505,6 +507,12 @@ pub enum AutomationBlocker {
 }
 
 #[derive(Clone)]
+struct RestartOwners {
+    supervisor: Arc<Supervisor>,
+    tunnel: Arc<TunnelSupervisor>,
+}
+
+#[derive(Clone)]
 pub struct AutomationController {
     config: AutomationConfig,
     store: AutomationStateStore,
@@ -517,6 +525,7 @@ pub struct AutomationController {
     persistence_available: Arc<RwLock<bool>>,
     evaluation: Arc<Mutex<()>>,
     run_active: Arc<AtomicBool>,
+    restart_owners: Option<RestartOwners>,
 }
 
 impl AutomationController {
@@ -587,6 +596,7 @@ impl AutomationController {
             persistence_available: Arc::new(RwLock::new(persistence_available)),
             evaluation: Arc::new(Mutex::new(())),
             run_active: Arc::new(AtomicBool::new(false)),
+            restart_owners: None,
         }
     }
 
@@ -604,6 +614,15 @@ impl AutomationController {
 
     pub fn operation_service(&self) -> &OperationService {
         &self.operations
+    }
+
+    pub fn with_restart_owners(
+        mut self,
+        supervisor: Arc<Supervisor>,
+        tunnel: Arc<TunnelSupervisor>,
+    ) -> Self {
+        self.restart_owners = Some(RestartOwners { supervisor, tunnel });
+        self
     }
 
     pub async fn run(self: Arc<Self>, shutdown: Arc<Notify>) {
@@ -624,25 +643,57 @@ impl AutomationController {
                 *self.persistence_available.write().await = false;
             }
 
-            let sleep_ms = {
+            let schedule_due = {
                 let state = self.state.lock().await;
-                self.schedule
-                    .next_due_ms(&state)
-                    .map(|deadline| deadline.saturating_sub(now_ms).max(1))
-                    .unwrap_or(60_000)
-                    .min(60_000)
+                self.schedule.next_due_ms(&state)
             };
+            let restart_due = self.next_restart_due_ms().await;
+            let next_due = match (schedule_due, restart_due) {
+                (Some(left), Some(right)) => Some(left.min(right)),
+                (Some(value), None) | (None, Some(value)) => Some(value),
+                (None, None) => None,
+            };
+            let sleep_ms = next_due
+                .map(|deadline| deadline.saturating_sub(now_ms).max(1))
+                .unwrap_or(60_000)
+                .min(60_000);
 
             tokio::select! {
                 _ = shutdown.notified() => break,
                 _ = tokio::time::sleep(Duration::from_millis(sleep_ms)) => {}
             }
 
+            self.process_due_restarts(self.clock.now_ms()).await;
             if *self.persistence_available.read().await && self.tick().await.is_err() {
                 *self.blocker.write().await = Some(AutomationBlocker::StateUnavailable);
                 *self.persistence_available.write().await = false;
             }
         }
+    }
+
+    async fn next_restart_due_ms(&self) -> Option<u64> {
+        let Some(owners) = &self.restart_owners else {
+            return None;
+        };
+        let (mcp, tunnel) = tokio::join!(
+            owners.supervisor.next_restart_due_ms(),
+            owners.tunnel.next_restart_due_ms()
+        );
+        match (mcp, tunnel) {
+            (Some(left), Some(right)) => Some(left.min(right)),
+            (Some(value), None) | (None, Some(value)) => Some(value),
+            (None, None) => None,
+        }
+    }
+
+    async fn process_due_restarts(&self, now_ms: u64) {
+        let Some(owners) = &self.restart_owners else {
+            return;
+        };
+        let (_, _) = tokio::join!(
+            owners.supervisor.process_due_restarts(now_ms),
+            owners.tunnel.process_due_restart(now_ms)
+        );
     }
 
     async fn refresh_clock_blocker(&self, now_ms: u64) -> StudioResult<()> {

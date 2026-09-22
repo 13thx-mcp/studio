@@ -86,7 +86,7 @@ pub struct GatewayControlClient {
     socket: PathBuf,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct GatewayControlResponse {
     ok: bool,
     #[serde(default)]
@@ -94,7 +94,70 @@ struct GatewayControlResponse {
     state: String,
     drain_generation: u64,
     #[serde(default)]
+    active_requests: usize,
+    #[serde(default)]
+    queued_requests: usize,
+    #[serde(default)]
+    catalog_generation: u64,
+    #[serde(default)]
+    profile_generation: u64,
+    #[serde(default)]
+    capabilities: Vec<String>,
+    #[serde(default)]
+    automation_safety_available: bool,
+    #[serde(default)]
+    safety_hold_count: usize,
+    #[serde(default)]
+    children: Vec<GatewayChildSummary>,
+    #[serde(default)]
     history: Option<GatewayHistoryBatch>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct GatewayChildSummary {
+    pub name: String,
+    pub enabled: bool,
+    pub running: bool,
+    pub generation: u64,
+    pub recovery_state: String,
+    pub consecutive_failures: usize,
+    pub retry_at_ms: Option<u64>,
+    pub tool_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GatewaySafetyStatus {
+    pub instance_id: Option<String>,
+    pub state: String,
+    pub drain_generation: u64,
+    pub active_requests: usize,
+    pub queued_requests: usize,
+    pub catalog_generation: u64,
+    pub profile_generation: u64,
+    pub capabilities: Vec<String>,
+    pub automation_safety_available: bool,
+    pub safety_hold_count: usize,
+    pub children: Vec<GatewayChildSummary>,
+}
+
+impl GatewaySafetyStatus {
+    pub fn supports(&self, capability: &str) -> bool {
+        self.capabilities.iter().any(|value| value == capability)
+    }
+
+    pub fn supports_m8_child_status(&self) -> bool {
+        self.supports("m8_child_status")
+    }
+
+    pub fn supports_m8_automatic_mutation_safety(&self) -> bool {
+        self.supports_m8_child_status()
+            && self.supports("m8_safety_holds")
+            && self.automation_safety_available
+    }
+
+    pub fn is_idle(&self) -> bool {
+        self.active_requests == 0 && self.queued_requests == 0
+    }
 }
 
 impl GatewayControlClient {
@@ -155,6 +218,70 @@ impl GatewayControlClient {
                 component: "gateway".into(),
                 detail: "Gateway control socket response schema is invalid".into(),
             }
+        })
+    }
+
+    pub async fn status(&self) -> StudioResult<GatewaySafetyStatus> {
+        let response = self
+            .exchange(json!({"version": 1, "action": "status"}))
+            .await?;
+        if !response.ok {
+            return Err(StudioError::UpdateVerificationFailed {
+                component: "gateway".into(),
+                detail: "Gateway status request failed".into(),
+            });
+        }
+        if response.capabilities.len() > 32 || response.children.len() > 128 {
+            return Err(StudioError::UpdateVerificationFailed {
+                component: "gateway".into(),
+                detail: "Gateway safety status exceeds bounded cardinality".into(),
+            });
+        }
+        let mut capabilities = response.capabilities;
+        capabilities.sort();
+        capabilities.dedup();
+        for capability in &capabilities {
+            if capability.is_empty()
+                || capability.len() > 64
+                || !capability
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+            {
+                return Err(StudioError::UpdateVerificationFailed {
+                    component: "gateway".into(),
+                    detail: "Gateway safety capability name is invalid".into(),
+                });
+            }
+        }
+
+        let mut children = response.children;
+        children.sort_by(|left, right| left.name.cmp(&right.name));
+        if children.windows(2).any(|pair| pair[0].name == pair[1].name)
+            || children.iter().any(|child| {
+                child.name.is_empty()
+                    || child.name.len() > 64
+                    || child.recovery_state.is_empty()
+                    || child.recovery_state.len() > 64
+            })
+        {
+            return Err(StudioError::UpdateVerificationFailed {
+                component: "gateway".into(),
+                detail: "Gateway child safety status is invalid".into(),
+            });
+        }
+
+        Ok(GatewaySafetyStatus {
+            instance_id: response.instance_id,
+            state: response.state,
+            drain_generation: response.drain_generation,
+            active_requests: response.active_requests,
+            queued_requests: response.queued_requests,
+            catalog_generation: response.catalog_generation,
+            profile_generation: response.profile_generation,
+            capabilities,
+            automation_safety_available: response.automation_safety_available,
+            safety_hold_count: response.safety_hold_count,
+            children,
         })
     }
 
@@ -2378,6 +2505,75 @@ args: []
         assert_eq!(client.drain_for_update().await.unwrap(), 9);
         client.resume(9).await.unwrap();
         client.reload().await.unwrap();
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn gateway_status_consumes_m8_child_capability_and_safety_fields() {
+        let root = tempfile::TempDir::new().unwrap();
+        let control_dir = root.path().join("runtime/gateway/control");
+        fs::create_dir_all(&control_dir).unwrap();
+        let socket = control_dir.join("gateway.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read, mut write) = stream.into_split();
+            let mut line = Vec::new();
+            BufReader::new(read)
+                .read_until(b'\n', &mut line)
+                .await
+                .unwrap();
+            write
+                .write_all(
+                    br#"{"ok":true,"instance_id":"gw-1","state":"RUNNING","drain_generation":4,"active_requests":2,"queued_requests":3,"catalog_generation":8,"profile_generation":5,"capabilities":["m8_child_status"],"automation_safety_available":false,"safety_hold_count":0,"children":[{"name":"git","enabled":true,"running":true,"generation":7,"recovery_state":"HEALTHY","consecutive_failures":0,"retry_at_ms":null,"tool_count":28}]}"#,
+                )
+                .await
+                .unwrap();
+            write.write_all(b"\n").await.unwrap();
+        });
+
+        let client = GatewayControlClient { socket };
+        let status = client.status().await.unwrap();
+        assert_eq!(status.active_requests, 2);
+        assert_eq!(status.queued_requests, 3);
+        assert_eq!(status.catalog_generation, 8);
+        assert_eq!(status.profile_generation, 5);
+        assert!(status.supports_m8_child_status());
+        assert!(!status.supports_m8_automatic_mutation_safety());
+        assert!(!status.is_idle());
+        assert_eq!(status.children[0].name, "git");
+        assert_eq!(status.children[0].generation, 7);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn old_gateway_status_remains_parseable_but_cannot_authorize_automation() {
+        let root = tempfile::TempDir::new().unwrap();
+        let control_dir = root.path().join("runtime/gateway/control");
+        fs::create_dir_all(&control_dir).unwrap();
+        let socket = control_dir.join("gateway.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read, mut write) = stream.into_split();
+            let mut line = Vec::new();
+            BufReader::new(read)
+                .read_until(b'\n', &mut line)
+                .await
+                .unwrap();
+            write
+                .write_all(br#"{"ok":true,"state":"RUNNING","drain_generation":0}"#)
+                .await
+                .unwrap();
+            write.write_all(b"\n").await.unwrap();
+        });
+
+        let client = GatewayControlClient { socket };
+        let status = client.status().await.unwrap();
+        assert!(status.capabilities.is_empty());
+        assert!(!status.supports_m8_child_status());
+        assert!(!status.supports_m8_automatic_mutation_safety());
+        assert!(status.is_idle());
         server.await.unwrap();
     }
 

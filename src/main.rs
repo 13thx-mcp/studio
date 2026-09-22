@@ -11,10 +11,12 @@ use mcp_studio::{
     automation::AutomationController,
     config::{LoadedConfigIdentity, StudioConfig},
     discovery::DiscoveryService,
+    health::HealthService,
     logging,
     operation::OperationService,
     realtime::EventHub,
     registry::Registry,
+    reliability::{RestartOwnerContext, RestartPolicy},
     storage::HistoryHandle,
     supervisor::Supervisor,
     tunnel::TunnelSupervisor,
@@ -120,17 +122,19 @@ async fn main() -> Result<()> {
     let activation_config_identity = loaded_config_identity.clone();
     let studio_config_identity =
         StudioProcessConfigIdentity::from_loaded(loaded_config_identity, process_instance);
+    let catalog = ComponentCatalog::new(HostRuntimeRoots::new(bin_root, runtime_root)?);
+    let runtime_operations = catalog.runtime_operations();
+
     let registry = Registry::open(&base_dir, &config.registry, &config.mcp)?;
-    let supervisor = Arc::new(Supervisor::new_with_history(
+    let supervisor = Arc::new(Supervisor::new_with_history_and_restart(
         registry.clone(),
         config.log_capacity,
         Duration::from_millis(config.stop_timeout_ms),
         history.clone(),
+        RestartPolicy::for_mcp(&config.automation.restart),
+        runtime_operations.clone(),
     ));
     let discovery = Arc::new(DiscoveryService::new(registry));
-
-    let catalog = ComponentCatalog::new(HostRuntimeRoots::new(bin_root, runtime_root)?);
-    let runtime_operations = catalog.runtime_operations();
     let mut desired = std::collections::BTreeMap::new();
     for (component, version) in &config.updates.desired {
         desired.insert(component.parse::<ComponentId>()?, Version::parse(version)?);
@@ -144,13 +148,23 @@ async fn main() -> Result<()> {
     let gateway_history_client = GatewayControlClient::from_catalog(&catalog);
 
     let registry_events = EventHub::default();
-    let tunnel = Arc::new(TunnelSupervisor::new_with_history(
+    let tunnel = Arc::new(TunnelSupervisor::new_with_history_and_restart(
         config.tunnel.clone(),
         config.log_capacity,
         Duration::from_millis(config.stop_timeout_ms),
         base_dir,
         EventHub::default(),
         history.clone(),
+        RestartOwnerContext::new(
+            RestartPolicy::for_tunnel(&config.automation.restart),
+            runtime_operations.clone(),
+        ),
+    ));
+    let _health = Arc::new(HealthService::new(
+        supervisor.clone(),
+        tunnel.clone(),
+        inventory.clone(),
+        gateway_history_client.clone(),
     ));
     let updates = Arc::new(McpUpdateManager::new(
         catalog.clone(),
@@ -207,13 +221,16 @@ async fn main() -> Result<()> {
         "runtime reconciliation startup check completed"
     );
 
-    let automation = Arc::new(AutomationController::new(
-        config.automation.clone(),
-        activation_runtime_root.clone(),
-        Some(automation_policy_fingerprint),
-        runtime_operations.clone(),
-        operations.clone(),
-    ));
+    let automation = Arc::new(
+        AutomationController::new(
+            config.automation.clone(),
+            activation_runtime_root.clone(),
+            Some(automation_policy_fingerprint),
+            runtime_operations.clone(),
+            operations.clone(),
+        )
+        .with_restart_owners(supervisor.clone(), tunnel.clone()),
+    );
     if let Some(blocker) = automation.blocker().await {
         tracing::warn!(
             ?blocker,

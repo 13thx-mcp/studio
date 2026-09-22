@@ -17,7 +17,9 @@ use crate::{
     error::{StudioError, StudioResult},
     realtime::{EventHub, StudioEvent},
     registry::{RegisteredMcp, Registry},
+    reliability::{RestartEpisode, RestartPolicy},
     storage::{HistoryHandle, LifecycleEndKind, LifecycleOwnerKind, LifecycleSessionContext},
+    update::RuntimeOperationCoordinator,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -39,6 +41,10 @@ pub struct ProcessStatus {
     pub uptime_ms: Option<u64>,
     pub restart_count: u64,
     pub crash_count: u64,
+    pub desired_running: bool,
+    pub restart_state: &'static str,
+    pub consecutive_restart_failures: u32,
+    pub retry_at_ms: Option<u64>,
     pub last_exit_code: Option<i32>,
     pub last_error: Option<String>,
 }
@@ -72,6 +78,8 @@ struct RuntimeState {
     next_log_sequence: u64,
     generation: u64,
     history_session: Option<LifecycleSessionContext>,
+    desired_running: bool,
+    restart_episode: RestartEpisode,
 }
 
 impl Default for RuntimeState {
@@ -88,6 +96,8 @@ impl Default for RuntimeState {
             next_log_sequence: 1,
             generation: 0,
             history_session: None,
+            desired_running: false,
+            restart_episode: RestartEpisode::default(),
         }
     }
 }
@@ -104,6 +114,10 @@ impl RuntimeState {
                 .map(|started| u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)),
             restart_count: self.restart_count,
             crash_count: self.crash_count,
+            desired_running: self.desired_running,
+            restart_state: self.restart_episode.phase.as_str(),
+            consecutive_restart_failures: self.restart_episode.consecutive_failures,
+            retry_at_ms: self.restart_episode.retry_at_ms,
             last_exit_code: self.last_exit_code,
             last_error: self.last_error.clone(),
         }
@@ -136,11 +150,20 @@ pub struct Supervisor {
     log_capacity: usize,
     stop_timeout: Duration,
     history: Option<HistoryHandle>,
+    restart_policy: RestartPolicy,
+    runtime_operations: Option<Arc<RuntimeOperationCoordinator>>,
 }
 
 impl Supervisor {
     pub fn new(registry: Registry, log_capacity: usize, stop_timeout: Duration) -> Self {
-        Self::new_internal(registry, log_capacity, stop_timeout, None)
+        Self::new_internal(
+            registry,
+            log_capacity,
+            stop_timeout,
+            None,
+            RestartPolicy::disabled(),
+            None,
+        )
     }
 
     pub fn new_with_history(
@@ -149,7 +172,32 @@ impl Supervisor {
         stop_timeout: Duration,
         history: HistoryHandle,
     ) -> Self {
-        Self::new_internal(registry, log_capacity, stop_timeout, Some(history))
+        Self::new_internal(
+            registry,
+            log_capacity,
+            stop_timeout,
+            Some(history),
+            RestartPolicy::disabled(),
+            None,
+        )
+    }
+
+    pub fn new_with_history_and_restart(
+        registry: Registry,
+        log_capacity: usize,
+        stop_timeout: Duration,
+        history: HistoryHandle,
+        restart_policy: RestartPolicy,
+        runtime_operations: Arc<RuntimeOperationCoordinator>,
+    ) -> Self {
+        Self::new_internal(
+            registry,
+            log_capacity,
+            stop_timeout,
+            Some(history),
+            restart_policy,
+            Some(runtime_operations),
+        )
     }
 
     fn new_internal(
@@ -157,6 +205,8 @@ impl Supervisor {
         log_capacity: usize,
         stop_timeout: Duration,
         history: Option<HistoryHandle>,
+        restart_policy: RestartPolicy,
+        runtime_operations: Option<Arc<RuntimeOperationCoordinator>>,
     ) -> Self {
         Self {
             registry,
@@ -165,6 +215,8 @@ impl Supervisor {
             log_capacity,
             stop_timeout,
             history,
+            restart_policy,
+            runtime_operations,
         }
     }
 
@@ -242,6 +294,7 @@ impl Supervisor {
                 ProcessState::Stopped | ProcessState::Failed => {}
                 _ => return Err(StudioError::AlreadyRunning(id.to_owned())),
             }
+            state.desired_running = true;
             state.state = ProcessState::Starting;
             state.last_error = None;
             state.generation = state.generation.wrapping_add(1);
@@ -296,6 +349,8 @@ impl Supervisor {
 
         let (pid, stopping_status, log_entry) = {
             let mut state = runtime.lock().await;
+            state.desired_running = false;
+            state.restart_episode.clear();
             match state.state {
                 ProcessState::Running | ProcessState::Starting => {
                     let Some(pid) = state.pid else {
@@ -449,6 +504,7 @@ impl Supervisor {
             state.started_at = Some(Instant::now());
             state.last_exit_code = None;
             state.last_error = None;
+            state.restart_episode.on_started();
             state.history_session = history_session.clone();
             let entry = state.push_log(
                 self.log_capacity,
@@ -504,10 +560,11 @@ impl Supervisor {
         let capacity = self.log_capacity;
         let events = self.events.clone();
         let history = self.history.clone();
+        let supervisor = self.clone();
         tokio::spawn(async move {
             let _stdin_guard = stdin;
             let result = child.wait().await;
-            let (status, log_entry, terminal) = {
+            let (status, log_entry, terminal, retry_at_ms) = {
                 let mut state = runtime.lock().await;
                 if state.generation != generation {
                     return;
@@ -534,6 +591,8 @@ impl Supervisor {
                             )
                         } else if exit.success() {
                             state.state = ProcessState::Stopped;
+                            state.desired_running = false;
+                            state.restart_episode.clear();
                             state.last_error = None;
                             (
                                 format!("process exited: {exit}"),
@@ -565,12 +624,24 @@ impl Supervisor {
                         )
                     }
                 };
+                let retry_at_ms = if is_crash && state.desired_running {
+                    state.restart_episode.record_failure(
+                        now_ms(),
+                        exact_duration.map(|duration| {
+                            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+                        }),
+                        supervisor.restart_policy,
+                    )
+                } else {
+                    None
+                };
                 let entry = state.push_log(capacity, LogStream::Studio, message);
                 (
                     state.status(&id_owned, &name_owned),
                     entry,
                     history_session
                         .map(|context| (context, end_kind, exit_code, is_crash, exact_duration)),
+                    retry_at_ms,
                 )
             };
             if let (Some(history), Some((context, end_kind, exit_code, is_crash, duration))) =
@@ -587,9 +658,74 @@ impl Supervisor {
                 status: status.clone(),
             });
             tracing::info!(mcp_id = id_owned, state = ?status.state, "MCP process exited");
+            let _ = retry_at_ms;
         });
 
         Ok(())
+    }
+
+    pub async fn next_restart_due_ms(&self) -> Option<u64> {
+        let runtimes = self.runtimes.read().await;
+        let values = runtimes.values().cloned().collect::<Vec<_>>();
+        drop(runtimes);
+        let mut next = None;
+        for runtime in values {
+            let state = runtime.lock().await;
+            if state.desired_running
+                && state.state == ProcessState::Failed
+                && let Some(retry) = state.restart_episode.retry_at_ms
+            {
+                next = Some(next.map_or(retry, |current: u64| current.min(retry)));
+            }
+        }
+        next
+    }
+
+    pub async fn process_due_restarts(&self, now_ms: u64) {
+        if !self.restart_policy.enabled {
+            return;
+        }
+        let busy = self.runtime_operations.as_ref().is_some_and(|coordinator| {
+            coordinator
+                .snapshot()
+                .map(|snapshot| !snapshot.is_idle())
+                .unwrap_or(true)
+        });
+
+        for id in self.registry.ids() {
+            let runtime = self.runtime_or_create(&id).await;
+            let due = {
+                let mut state = runtime.lock().await;
+                if !state.desired_running
+                    || state.state != ProcessState::Failed
+                    || !state.restart_episode.ready(now_ms)
+                {
+                    false
+                } else if busy {
+                    state
+                        .restart_episode
+                        .defer_without_failure(now_ms, self.restart_policy);
+                    false
+                } else {
+                    state.restart_count = state.restart_count.saturating_add(1);
+                    true
+                }
+            };
+            if !due {
+                continue;
+            }
+
+            if let Err(error) = self.start(&id).await {
+                tracing::warn!(mcp_id = %id, %error, "automatic MCP restart attempt failed");
+                let runtime = self.runtime_or_create(&id).await;
+                let mut state = runtime.lock().await;
+                if state.desired_running {
+                    state
+                        .restart_episode
+                        .record_failure(now_ms, Some(0), self.restart_policy);
+                }
+            }
+        }
     }
 
     async fn wait_for_terminal_state(&self, id: &str) -> StudioResult<()> {
@@ -601,6 +737,14 @@ impl Supervisor {
             sleep(Duration::from_millis(25)).await;
         }
     }
+}
+
+fn now_ms() -> u64 {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    u64::try_from(millis).unwrap_or(u64::MAX)
 }
 
 fn strip_ansi(input: &str) -> String {
