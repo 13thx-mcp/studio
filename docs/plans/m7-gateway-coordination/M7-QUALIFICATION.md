@@ -1,134 +1,175 @@
 # M7 Qualification and Closure Audit
 
 **Audit date:** 2026-09-22
-**Status:** IMPLEMENTATION QUALIFIED / CLOSURE FIXES INTEGRATED / LOCAL RELEASE TAGS RECONCILED / PUBLICATION PENDING
-**Publication:** local release tags exist but are not published to `origin`; deployment is not claimed.
+**Status:** VERIFIED / FINAL RECONCILIATION IMPLEMENTED / CLOSURE PATCH 0.7.1
+**Publication:** source integration, release tagging, remote publication, and deployment are distinct states. Previously published tags are immutable.
 
-## Qualified implementation commits
+## Current qualified component baseline
 
-| Component | Qualified implementation | Version | Publication state |
+The final reconciliation runner records exact Git identity at both the beginning and end of every run. The authoritative exact-head record is the generated `summary.json`; this document records the component line used for the M7 closure patch.
+
+| Component | Current qualified line | Version | Current release-state observation |
 |---|---|---:|---|
-| Studio | `1c5dac50849134364c2fec6e70225b9027265812` + closure fix `543a6c4` | 0.7.0-beta | unpublished |
-| Gateway | `5b886c95509b63d6d31c1ba903825b8a385027ff` + qualification test `da432d7` | 0.2.0 | unpublished |
-| Filesystem | `ec68a043d9c67763c83d32e3a0b4f0a9f8e8c73f` | 0.2.0 | unpublished |
-| Fleet | `7bad5e2d4623e9867010572679dfc597a7dc4680` | 0.3.0 | unpublished |
+| Studio | M7 closure branch/main tree derived from `08a3fb4` plus final reconciliation fixes | 0.7.1 | `v0.7.0-beta` and `v0.7.0` already exist on origin and are immutable |
+| Gateway | `469ec9258855d39d9a3f57bae60ff4810ffeafb1` | 0.2.1 | current head is on origin/main; `v0.2.0` is published; local `v0.2.1` was not observed on origin during the audit |
+| Filesystem | `df98dc38c969c92f25c778d37691e7a3f1914367` | 0.2.0 | current head is on origin/main; local `v0.2.0` was not observed on origin during the audit |
+| Exec | `50d5b4df9d3ddcbf0203f47321ce90efda15ca47` | 0.1.0 | current head and `v0.1.0` are published on origin |
+| Git | `31ceadd79751c3be7aed197697c88d74c594b812` | 0.1.0 | current head and `v0.1.0` are published on origin |
+| Fleet | `2ccdf54495e23c86da5bc8f6799b44d225c2e136` | 0.4.0 | current head is on origin/main; `v0.3.0` is published; local `v0.4.0` was not observed on origin during the audit |
 
-The additional Studio/Gateway closure commits are descendants of the listed M7 merge commits. They do not change the frozen protocol/policy contracts; they close qualification gaps discovered by this audit.
+The older M7 implementation/closure commits remain valid historical lineage. They are not used as substitutes for current-head evidence.
 
-Final integration is now complete: Studio `main` is `3423d8e` and contains `543a6c4`; Gateway `main` is `36aea90` and contains `da432d7`.
+## Final reconciliation runner
 
-## Clean-source gates
+Studio now owns the authoritative foreground runner:
 
-### Gateway
+`scripts/verify-m7-closure.py`
 
-Detached clean worktree at merge `5b886c9`:
+It provides:
 
-- `cargo fmt --check` — PASS
-- `cargo check --all-targets --all-features` — PASS
-- `cargo clippy --all-targets --all-features -- -D warnings` — PASS
-- `cargo test --all-targets --all-features` — PASS, 51 tests
+- exact branch/HEAD/version/clean-state capture for Studio, Gateway, Filesystem, Exec, Git and Fleet;
+- source-change detection across the run;
+- explicit Rust 1.98.1 toolchain validation;
+- Cargo/Rustfmt/Clippy/Cargo Audit/Python/Node/pnpm/Git preflight;
+- Fleet `render-plan --json` validation including schema, host identity, confined relative paths, unique surfaces/paths, base64 decoding and SHA-256 verification;
+- full component format/check/Clippy/test/build/audit gates;
+- Studio web lint/typecheck/test/build;
+- targeted M7 regression proofs;
+- explicit runtime-only reconciliation;
+- M5/M6 regression execution.
 
-Permanent coverage includes scheduler capacity/fairness/deadline/cancellation, drain, post-dispatch unknown outcome/no replay, child generation/recovery/circuit, payload/artifact bounds, profile routing, resource identity, progress mapping, telemetry sanitation and control-socket lifecycle.
+The root `mcp-server/Makefile` is convenience orchestration only. The version-controlled Studio runner is the qualification authority.
 
-Qualification branch `da432d7` adds a permanent bounded scheduler soak: 100 rounds × 40 concurrent admissions (4,000 total) with global active bound 8, queue bound 32, and zero active/queued leaks after every round. Focused soak and the full Gateway suite pass; the full suite becomes 52 tests.
+## Final component gates
 
-### Filesystem
-
-Clean `main` at `ec68a04`:
-
-- fmt/check/Clippy — PASS
-- full tests — PASS, 10/10
-
-Coverage includes deterministic SHA-256 revision identity, stale external edit detection, same-revision writer serialization/recheck, bounded range/search/patch behavior, symlink-component confinement, and injected replacement-failure cleanup.
-
-### Fleet
-
-Detached clean worktree at merge `7bad5e2`:
-
-- `python3 -m unittest discover -s tests -p 'test_*.py' -v` — PASS, 19/19
-
-Coverage includes host schema v2, deterministic `gateway.policy` rendering, invalid active-profile rejection, and exact dual tunnel asset selection.
+The clean-source reconciliation run covers:
 
 ### Studio
 
-Detached clean worktree at merge `1c5dac5`:
+- Rust fmt/check/Clippy — PASS;
+- Rust tests — 287 tests reported passed across the suite during the reconciliation qualification;
+- build — PASS;
+- cargo audit — PASS;
+- web lint/typecheck/test/build — PASS;
+- permanent runtime-loss tunnel stop regression — PASS;
+- pure Fleet render-plan validator test — PASS.
 
-- fast quality profile — PASS, 6/6 checks
-- Rust fmt/check/Clippy/tests — PASS
-- Studio Rust closure suite — 261 passed / 11 explicitly ignored in the main library suite, plus all integration test binaries PASS
-- web Vitest — 31/31 PASS
+### Gateway
 
-Coverage includes sanitized Gateway history ingestion, history-unavailable behavior, Gateway drain/update verification, managed Gateway policy reconciliation, dual tunnel asset staging, full-client diagnostics, and distinct liveness/readiness/MCP/poll health.
+- fmt/check/Clippy/build/audit — PASS;
+- full suite — 52 tests PASS;
+- permanent bounded scheduler soak — PASS.
 
-## Runtime-only closure finding and fix
+The soak retains the M7 bound proof: 100 rounds × 40 admissions, global active bound 8, queue bound 32, and zero active/queued obligations after every round.
 
-The explicit runtime-only reconciliation smoke was run against the clean Studio merge `1c5dac5` and initially **FAILED**:
+### Filesystem
+
+- fmt/check/Clippy/build/audit — PASS;
+- full suite — 10 tests PASS;
+- external-change revision/CAS proof — PASS;
+- concurrent same-revision writer serialization/recheck — PASS.
+
+### Exec
+
+- fmt/check/Clippy/build/audit — PASS;
+- full suite — 5 tests PASS;
+- MCP cancellation/direct-child termination regression — PASS.
+
+The current contract guarantees termination of the owned direct child. M8 must not silently broaden that statement into arbitrary process-tree cancellation without a separately reviewed process-group contract.
+
+### Git
+
+- fmt/check/Clippy/build/audit — PASS;
+- full suite — 16 tests PASS;
+- canonical release-tag identity repair remains on the current qualified head.
+
+### Fleet
+
+- full Python unittest discovery — PASS;
+- current Aira pure render-plan emits six validated managed surfaces:
+  - `gateway.exec`;
+  - `gateway.filesystem`;
+  - `gateway.git`;
+  - `gateway.sonarqube`;
+  - `studio.config`;
+  - `tunnel.config`.
+
+## Runtime-only reconciliation finding
+
+The first new full clean reconciliation run exposed a real stale qualification fixture:
 
 ```text
-Fleet render-plan output set is incomplete or excessive
+Fleet render-plan returned failure
 ```
 
-Root cause: Studio hard-coded the schema-v2 `gateway.policy` surface into reconciliation validation, while a supported schema-v1 runtime-only Fleet profile legitimately renders no global policy surface.
+The render-plan provider originally discarded stderr, hiding the actual reason. The reconciliation fix now retains a bounded 512-character stderr diagnostic. The rerun exposed:
 
-Closure fix `543a6c4` derives the expected managed surfaces from the trusted active Fleet host:
+```text
+fleetctl: invalid or missing tunnel.tunnel_id
+```
 
-- exact active server names determine `gateway.<server>` surfaces;
-- `gateway.policy` is required only when the host declares Gateway policy;
-- server names are validated before constructing managed paths;
-- managed-surface path validation remains fail-closed.
+Root cause: the Studio runtime-only smoke fixture predated the current Fleet tunnel identity contract. The runtime-only host profile was updated with an explicit valid tunnel ID; no production authority was relaxed.
 
-Permanent tests for dynamic active-host surfaces and path-escape rejection PASS. The explicit runtime-only smoke then PASSes using copied runtime artifacts, a deliberately absent source root, real Gateway/Filesystem/Git/Exec binaries, and preserved tunnel runtime.
+After the fix:
 
-This is the R45/Q13 closure evidence. The failed pre-fix run is retained here because it materially changed the closure result.
+- Fleet pure render-plan validation PASSes;
+- the explicit source-less/runtime-only reconciliation smoke PASSes;
+- real copied Gateway/Filesystem/Git/Exec binaries load a 35-tool three-child catalog;
+- the deliberately absent source root remains absent;
+- M5/M6 regression profile PASSes.
 
-## R46/Q14 bounded soak and fault evidence
+This finding is retained because the final runner correctly detected cross-repository contract drift that component-only testing did not expose.
 
-R46 is defined as bounded scheduler obligations under sustained admission rather than process-RSS benchmarking.
+## Tunnel lifecycle regression
 
-Permanent Gateway qualification `da432d7` proves:
+The Studio UI already retained Stop while a running tunnel reported `runtime_available=false`. Final reconciliation adds backend lifecycle evidence:
 
-- 4,000 admissions across 100 rounds;
-- active calls never exceed the configured global bound;
-- queued calls never exceed the configured queue bound;
-- every round returns to zero active and zero queued obligations;
-- no scheduler capacity leak remains after the soak.
+1. start a real test tunnel;
+2. remove its configured runtime executable while the process remains running;
+3. verify status remains Running with `runtime_available=false`;
+4. stop the owned process successfully;
+5. verify Stopped state and PID clearing.
 
-Q14 is a composite fault qualification rather than one monolithic test. The soak is combined with permanent Gateway tests for cancellation, queue expiry, child crash-loop/circuit behavior, failed child catalog refresh, drain, and payload/artifact disk-pressure cleanup.
+Start/restart continue to require an available runtime. Stop remains an ownership operation over the already-running process.
 
-## Workspace aliases
+## M5/M6 regression boundary
 
-ADR 0034 explicitly **does not retain workspace aliases in M7**. No alias registry, alias binding lifetime, or alias-derived authority is implemented.
+The final M7 runner executes the existing M6 regression profile after the current M7 component and targeted gates. This preserves the authority split:
 
-Therefore former R34/R35 alias requirements are retired by contract, not reported as implementation PASS. Any future workspace-alias feature requires a separate ADR and new verification rows before it can expand the M7 surface.
+- Gateway/runtime owners retain live request authority;
+- M6 SQLite remains historical evidence only;
+- M5 update/rollback contracts remain authoritative;
+- M7 does not enable M8 unattended update/reconciliation policy.
 
-## Clean provenance
+## Release and publication truth
 
-The audit used detached worktrees at the exact Studio/Gateway/Fleet merge commits; all three were clean. Filesystem `main` at `ec68a04` was clean. Qualification changes were isolated on dedicated branches.
+Remote-refresh verification materially corrected earlier M7 documentation.
 
-Concurrent unrelated working-tree changes in Studio/Fleet/Gateway feature worktrees were not used as clean-source evidence and were not staged into the qualification commits.
+For Studio:
 
-## Release/publication boundary
+- `v0.7.0-beta` exists on origin;
+- `v0.7.0` exists on origin;
+- those tags are immutable and must not be moved;
+- the post-release closure patch therefore advances to `0.7.1`.
 
-Local release tags currently exist:
+For other components, current main reachability and tag publication differ by repository; the table above records the observed state. No tag is rewritten merely to make historical M7 documentation look uniform.
 
-- Studio `v0.7.0-beta`
-- Gateway `v0.2.0`
-- Filesystem `v0.2.0`
-- Fleet `v0.3.0`
-
-Remote-refresh publication guards prove that all four M7 merge commits and all four tags are currently **unpublished** on `origin`.
-
-Main integration is complete for all post-tag closure fixes. All four local release tags have now been reconciled to their qualified release commits: Studio `v0.7.0-beta`, Gateway `v0.2.0`, Filesystem `v0.2.0`, and Fleet `v0.3.0`. Remote publication guards were rerun after reconciliation and confirm the release commits and tags remain unpublished on `origin`. No push, public release, or deployment is part of this audit.
+A local `v0.7.1` tag may be created only after final clean main qualification. Remote publication and deployment require explicit later action.
 
 ## Closure disposition
 
 - M7.0 architecture freeze: PASS.
-- P-01..P-09 dispositions: PASS.
-- M7.1–M7.8 implementation evidence: PASS on the qualified commits above.
-- R45 runtime-only closure: PASS after Studio fix `543a6c4`.
-- R46 bounded soak: PASS on Gateway qualification commit `da432d7`.
-- R49 clean provenance: PASS.
-- R50 implementation/tag/publication state separation: PASS.
-- Final implementation/main integration readiness: **PASS**.
-- Final local release/tag readiness: **PASS**.
-- Publication/deployment readiness: **PENDING explicit push/release/deploy decision**.
+- P-01..P-09: CLOSED.
+- M7.1–M7.8 implementation: PASS.
+- M7.9 qualification: PASS on current component lines.
+- Runtime-only reconciliation: PASS after current Fleet contract fixture repair.
+- Bounded scheduler soak: PASS.
+- Filesystem revision/CAS: PASS.
+- Exec cancellation: PASS for the owned direct child.
+- Tunnel runtime-loss stop: PASS.
+- M5/M6 regressions: PASS.
+- Exact-source provenance: enforced by the final runner.
+- Release-state truth: corrected; published tags are immutable.
+- M7 closure patch: `0.7.1`.
+- M8 implementation: may begin only after final clean main qualification remains green.
+- Remote publication/deployment: separate explicit operator decisions.

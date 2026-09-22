@@ -96,6 +96,26 @@ async fn start_stop_and_duplicate_start_are_safe() {
 }
 
 #[tokio::test]
+async fn stop_remains_available_when_runtime_disappears() {
+    let fixture = Fixture::new(LONG_RUNNING);
+    let supervisor = fixture.supervisor(EventHub::default());
+
+    let running = supervisor.start().await.unwrap();
+    assert_eq!(running.state, TunnelState::Running);
+    assert!(running.runtime_available);
+
+    fs::remove_file(fixture.root.join("runtime.sh")).unwrap();
+    let degraded = supervisor.status().await;
+    assert_eq!(degraded.state, TunnelState::Running);
+    assert!(!degraded.runtime_available);
+    assert!(degraded.pid.is_some());
+
+    let stopped = supervisor.stop().await.unwrap();
+    assert_eq!(stopped.state, TunnelState::Stopped);
+    assert!(stopped.pid.is_none());
+}
+
+#[tokio::test]
 async fn spawned_tunnel_cannot_receive_reserved_authority_environment() {
     let fixture = Fixture::new(
         r#"#!/bin/sh

@@ -2,7 +2,7 @@
 
 > Scope: local-first control plane for MCP runtime lifecycle, configuration, secure tunnel lifecycle, release/update management, fleet state, observability, and operational safety.
 >
-> Current qualified code baseline: **v0.6.0-alpha — M6 Persistence, Metrics & Auditability VERIFIED / CLOSED**. M5 publication evidence is qualified; the local `v0.6.0-alpha` tag exists, while remote tag push/publication remain separate release actions.
+> Current qualified code baseline: **v0.7.1 — M7 Gateway Coordination, Concurrency & Tool Safety VERIFIED / CLOSED**. `v0.7.0-beta` and `v0.7.0` are already published historical tags and remain immutable; the M7 closure patch uses a new patch version. Publication/deployment remain separate operator actions.
 >
 > Current deployment model: project source repositories under `mcp-server/<project>`, flat Rust MCP executables under `mcp-server/bin`, and non-MCP runtime/config/state under `mcp-server/runtime`.
 >
@@ -95,7 +95,7 @@ A runtime-only host must update from verified release artifacts rather than by p
 
 # 2. Historical Baseline — v0.4.0
 
-Milestones 0–4 are complete and formed the v0.4.0 implementation baseline. The current qualified code baseline is v0.6.0-alpha as recorded at the top of this roadmap.
+Milestones 0–4 are complete and formed the v0.4.0 implementation baseline. The current qualified code baseline is the M7 closure patch recorded at the top of this roadmap.
 
 ## Completed capabilities
 
@@ -1730,7 +1730,8 @@ v0.3.0        Tunnel Management                    COMPLETE
 v0.4.0        Registry + Discovery                 COMPLETE
 v0.5.0        Runtime Distribution + Update Mgr    COMPLETE / PUBLICATION QUALIFIED
 v0.6.0-alpha  Persistence + Metrics + Audit          VERIFIED / CLOSED
-v0.7.0-beta   Gateway Coordination + Tool Safety
+v0.7.0        Gateway Coordination + Tool Safety     HISTORICAL PUBLISHED TAG
+v0.7.1        M7 Closure/Reconciliation Patch        VERIFIED / CLOSED
 v0.8.0-beta   Hardening + Auto-Update + Recovery
 v0.9.0-rc     Security + Upgrade Safety + RC
 v1.0.0        Production Grade
@@ -1742,11 +1743,11 @@ Semantic Versioning is required for Studio and all `13thx-mcp` component release
 
 # 16. Current Immediate Next Step
 
-**Milestone 7 — Gateway Coordination, Concurrency & Tool Safety** is the next implementation milestone.
+**Milestone 8 — Hardening, Auto-Update Policy & Recovery** is the next implementation milestone.
 
-M5 publication qualification and M6 closure are complete. Before M7 implementation begins, post-M6 hardening changes must keep the existing M5/M6 authority and recovery contracts green under the normal clean-tree quality/security qualification.
+M7 request coordination, drain, bounded concurrency, cancellation/unknown-outcome semantics, Filesystem CAS, Fleet pure-render reconciliation, runtime-only integration, and sanitized Gateway telemetry are qualified and closed.
 
-M7 must start from the closed M6 authority split: SQLite remains historical evidence only; live request authority stays in Gateway/runtime owners; unattended auto-update/reconciliation remains M8 scope until M7 drain, concurrency, cancellation and unknown-outcome semantics are verified.
+M8 may build on these primitives for periodic reconciliation and constrained automatic update/recovery policy, but must preserve the M7 no-replay, drain, capability-boundary, rollback and historical-authority contracts.
 
 ---
 

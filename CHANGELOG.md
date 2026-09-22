@@ -6,10 +6,24 @@ The project follows Semantic Versioning once public/pre-release artifacts begin.
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-09-22
+
+### Added
+
+- Exact-source M7 final reconciliation runner with cross-repository provenance, pinned Rust toolchain preflight, Fleet pure-render validation, component gates, targeted regressions, runtime-only smoke, and M5/M6 regression execution.
+- Permanent tunnel lifecycle regression proving an already-running tunnel can still be stopped if its runtime executable disappears.
+
 ### Fixed
 
-- Tunnel child startup now rejects configured and removes inherited `MCP_COMMAND`, `MCP_SERVER_URL`, and `CONTROL_PLANE_POLL_CHANNELS` overrides after applying explicit tunnel environment, preserving validated config as the sole MCP target/poll-channel authority.
-- M5/M6 roadmap, architecture, threat-model, bootstrap, package-checklist, and release-state documentation now agree on M5 publication qualification and M6 VERIFIED/CLOSED disposition.
+- Runtime-only reconciliation fixture now satisfies the current Fleet tunnel identity contract.
+- Fleet render-plan process failures retain bounded stderr diagnostics instead of collapsing to an opaque failure.
+- Tunnel child startup rejects configured and removes inherited `MCP_COMMAND`, `MCP_SERVER_URL`, and `CONTROL_PLANE_POLL_CHANNELS` overrides after applying explicit tunnel environment, preserving validated config as the sole MCP target/poll-channel authority.
+- M5/M6/M7 roadmap and release-state documentation are reconciled to the current source and remote tag state.
+
+### Verified
+
+- Clean-source M7 qualification covers Studio, Gateway, Filesystem, Exec, Git and Fleet plus the Studio web build, Gateway bounded scheduler soak, Filesystem CAS conflicts, Exec cancellation, Fleet pure render-plan, runtime-only reconciliation, and M5/M6 regressions.
+- Remote publication refresh proves `v0.7.0-beta` and `v0.7.0` are published immutable Studio tags; the closure patch therefore advances to `0.7.1` rather than rewriting either tag.
 
 ## [0.7.0-beta] - 2026-09-22
 

@@ -232,9 +232,15 @@ impl RenderPlanProvider for FleetRenderPlanProvider {
                 detail: format!("Fleet render-plan failed to start: {error}"),
             })?;
         if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let detail = stderr.trim().chars().take(512).collect::<String>();
             return Err(StudioError::UpdateVerificationFailed {
                 component: "reconciliation".into(),
-                detail: "Fleet render-plan returned failure".into(),
+                detail: if detail.is_empty() {
+                    format!("Fleet render-plan exited with {}", output.status)
+                } else {
+                    format!("Fleet render-plan failed: {detail}")
+                },
             });
         }
         if output.stdout.len() > PLAN_MAX_BYTES {
@@ -2590,6 +2596,9 @@ runtime_root = "{}"
 
 [gateway]
 server_dir = "gateway/servers.d"
+
+[tunnel]
+tunnel_id = "tunnel_0123456789abcdef0123456789abcdef"
 
 [servers.filesystem]
 enabled = true
