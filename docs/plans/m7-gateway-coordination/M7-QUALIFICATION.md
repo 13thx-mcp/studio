@@ -1,7 +1,7 @@
 # M7 Qualification and Closure Audit
 
 **Audit date:** 2026-09-22
-**Status:** IMPLEMENTATION QUALIFIED ON EXACT COMMITS / CLOSURE FIXES AWAIT FINAL MAIN INTEGRATION
+**Status:** IMPLEMENTATION QUALIFIED / CLOSURE FIXES INTEGRATED ON MAIN / RELEASE PUBLICATION PENDING
 **Publication:** local release tags exist but are not published to `origin`; deployment is not claimed.
 
 ## Qualified implementation commits
@@ -14,6 +14,8 @@
 | Fleet | `7bad5e2d4623e9867010572679dfc597a7dc4680` | 0.3.0 | unpublished |
 
 The additional Studio/Gateway closure commits are descendants of the listed M7 merge commits. They do not change the frozen protocol/policy contracts; they close qualification gaps discovered by this audit.
+
+Final integration is now complete: Studio `main` is `3423d8e` and contains `543a6c4`; Gateway `main` is `36aea90` and contains `da432d7`.
 
 ## Clean-source gates
 
@@ -116,7 +118,7 @@ Local release tags currently exist:
 
 Remote-refresh publication guards prove that all four M7 merge commits and all four tags are currently **unpublished** on `origin`.
 
-Because Studio `543a6c4` and Gateway `da432d7` are post-tag closure fixes, the existing local Studio/Gateway tags are pre-closure tags. They must not be treated as final qualified release tags until those fixes are integrated and the local unpublished tags are deliberately reconciled. No push, release publication, or deployment is part of this audit.
+Main integration is complete for both post-tag closure fixes. Current local tag targets are now asymmetric: Gateway `v0.2.0` points at qualified `main` `36aea90`, Filesystem `v0.2.0` points at `ec68a04`, and Fleet `v0.3.0` points at `7bad5e2`; Studio `v0.7.0-beta` still points at pre-closure merge `1c5dac5` rather than qualified `main` `3423d8e`. All four tags and the qualified main commits were rechecked against `origin` and remain unpublished. Studio tag reconciliation is therefore the only local tag correction still required before release publication. No push, public release, or deployment is part of this audit.
 
 ## Closure disposition
 
@@ -127,4 +129,5 @@ Because Studio `543a6c4` and Gateway `da432d7` are post-tag closure fixes, the e
 - R46 bounded soak: PASS on Gateway qualification commit `da432d7`.
 - R49 clean provenance: PASS.
 - R50 implementation/tag/publication state separation: PASS.
-- Final release/tag publication readiness: **PENDING integration of the two post-tag closure fixes and tag reconciliation**.
+- Final implementation/main integration readiness: **PASS**.
+- Final release/tag publication readiness: **PENDING Studio `v0.7.0-beta` local tag reconciliation and an explicit publication/deployment decision**.
