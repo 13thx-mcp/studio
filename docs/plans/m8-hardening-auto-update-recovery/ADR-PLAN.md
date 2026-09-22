@@ -1,6 +1,6 @@
 # M8 ADR Plan
 
-All ADRs below are **proposed** until reviewed/accepted. M8.0 cannot close with a blocking decision left implicit.
+ADR 0037–0045 are **Accepted for M8 implementation** as of 2026-09-22. Any implementation divergence requires an ADR amendment before the affected package can close.
 
 | ADR | Decision | Primary proof |
 |---|---|---|
@@ -14,7 +14,7 @@ All ADRs below are **proposed** until reviewed/accepted. M8.0 cannot close with 
 | 0044 | Recovery cleanup, stale-lock policy and diagnostics sanitization | disk-full/corrupt/secret scan |
 | 0045 | Guarded SemVer prerelease release-tag/evidence contract | tag parser/evidence mismatch tests |
 
-## Decisions that must be explicit
+## Frozen decision checklist
 
 ### ADR 0037
 
@@ -81,6 +81,7 @@ All ADRs below are **proposed** until reviewed/accepted. M8.0 cannot close with 
 - exact package/changelog/release-evidence version matching;
 - existing published tag immutability;
 - no fallback to generic tagging when release gate fails.
+
 ## Rejected shortcuts
 
 - using SQLite rows as a work queue;

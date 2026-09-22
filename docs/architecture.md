@@ -4,13 +4,13 @@
 
 MCP Studio is a local-first control plane for MCP servers and the existing secure tunnel runtime under `mcp-server/`.
 
-## Current boundary — Milestone 6
+## Current boundary — M7 closed / M8 contract freeze
 
 Milestones 0–4 provide MCP supervision, the browser dashboard, secure-tunnel lifecycle, a persistent MCP registry, and metadata-only project discovery. M5 adds trusted runtime distribution, inventory/drift, transactional MCP/Gateway/Fleet/Tunnel updates, runtime reconciliation, external Studio self-update, rollback, and the Updates/Fleet operator surface. M5 publication qualification is complete for the supported darwin-arm64 runtime.
 
 M6 adds private SQLite-backed operational history, typed audit admission/outcome evidence, Studio/MCP/Tunnel observation sessions, update/artifact/install lineage, configuration/drift history, replay-safe metrics, bounded retention, and historical REST/realtime/UI. Registry/configuration files and live runtime/update owners remain authoritative; SQLite is historical evidence only and never resumes recovery or rehydrates live authority.
 
-Automatic restart/backoff, remote authentication, and Gateway-observed MCP request/usage telemetry remain later milestones. M7 is the next implementation boundary.
+M7 is closed: Gateway now owns bounded request admission/drain/concurrency, no-replay unknown outcomes, per-child recovery, strict policy/profiles, bounded payload/artifact handling, resources/progress and sanitized request/recovery telemetry; Filesystem revision/CAS and Exec cancellation are part of the qualified baseline. M8.0 has accepted the unattended hardening contracts, but M8 production automation is not implemented yet. Remote authentication/RBAC remains M9 scope.
 
 A proposed post-M7 Workspace Skill Runtime is documented in ADR 0036 and `docs/plans/workspace-skill-runtime/`. It does not change the current M7 implementation boundary: Gateway remains the external MCP request/safety boundary, typed MCPs remain concrete capability boundaries, and Studio would provide operator inventory/policy/evidence surfaces rather than becoming a general-purpose remote worker.
 
@@ -25,10 +25,48 @@ A proposed post-M7 Workspace Skill Runtime is documented in ADR 0036 and `docs/p
 - `update`: trusted component catalog plus typed release, installed-artifact, version, platform, drift, provider, installed/running identity, deterministic asset selection, verified staging, M5.7–M5.10 update transactions including durable Studio self-update handoff, and M5.9A runtime reconciliation with managed-state fingerprints and exact local Gateway catalog identity; M5.2/M5.3 include separate read-only GitHub providers for project-owned and official upstream releases.
 - `realtime`: typed bounded event streams plus registry/discovery/update/reconciliation/history invalidation and health events.
 - `web`: React + TypeScript + Vite operational dashboard with Registry/Discovery, Updates/Fleet controls, and M6 historical views.
-- `metrics`: M6 historical aggregation definitions and replay-safe bounded metric buckets; Gateway request telemetry is deferred to M7.
+- `metrics`: M6 historical aggregation definitions and replay-safe bounded metric buckets plus sanitized M7 Gateway request/catalog/recovery history projections.
 - `storage`: M6 private SQLite history/audit store, migrations, bounded worker queues/readers, retention, backup and historical query projections.
+- `automation` (M8 planned, not yet implemented): single background policy/scheduling owner with durable bounded state, SafetyGate and circuit/deferral semantics from ADR 0037–0044.
 - `logging`: structured logging initialization.
 - `error`: shared typed error boundary.
+
+## M8.0 accepted automation architecture
+
+M8.0 freezes the design in ADR 0037–0045 without enabling unattended mutation.
+
+The accepted ownership model is:
+
+```text
+AutomationController (Studio)
+  ├─ schedule/policy/circuit only
+  ├─ shared audit admission
+  ├─ activation-time SafetyGate
+  └─ bounded automation state
+          │
+          ├─ InventoryService
+          ├─ RuntimeReconciler
+          ├─ component update managers
+          └─ GatewayControlClient
+                         │
+                         ▼
+                 Gateway live authority
+                 ├─ M7 request/drain state
+                 ├─ M8 durable safety holds
+                 └─ global drain + targeted child restart
+```
+
+The controller is never a durable job queue. M6 SQLite remains historical evidence only.
+
+For Fleet-managed hosts, automation configuration is desired state in Fleet host schema v3 and is rendered into the existing managed `studio.config` surface. A changed managed Studio config blocks destructive automation until a restarted Studio process proves it loaded the new canonical bytes.
+
+Gateway M8 uses additive control-protocol capabilities. The initial generic MCP activation contract reuses the existing global M7 drain as the mutation barrier, restarts only the target child under the matching drain generation, verifies its new generation/catalog/identity, and then resumes admission. A second per-child scheduling system is intentionally not introduced.
+
+Unsafe post-dispatch unknown outcomes for server-owned `mutation`, `long-running`, or `control` classes become bounded durable Gateway safety holds. The hold store is a veto authority only; it contains no request arguments/results and cannot replay work.
+
+Generic/Gateway/Fleet auto-prepared staging is process-scoped authorization. After Studio restart, old ready staging may be revalidated for cleanup/reprepare but cannot be auto-applied merely because bytes remain on disk.
+
+The detailed source feasibility record is `docs/plans/m8-hardening-auto-update-recovery/M8.0-SOURCE-SPIKES.md`.
 
 ## Runtime model
 

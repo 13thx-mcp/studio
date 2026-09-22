@@ -2,9 +2,9 @@
 
 ## Scope
 
-MCP Studio is a privileged local control plane. As of the closed Milestone 6 baseline it can supervise registered MCP child processes, manage and transactionally update the secure tunnel runtime, persist MCP registration/configuration locally, discover/select/stage trusted releases, expose runtime inventory/drift, transactionally update generic flat Rust MCP binaries, Gateway and Fleet, reconcile generated runtime config, hand Studio self-update activation to a constrained external Fleet launcher, and persist bounded operational/audit/history evidence in SQLite.
+MCP Studio is a privileged local control plane. The closed M7 baseline can supervise registered MCP/tunnel processes, discover/select/stage trusted releases, transactionally update generic MCP/Gateway/Fleet/Tunnel/Studio runtime units, reconcile Fleet-managed runtime config, persist bounded audit/history evidence, and operate a Gateway that owns bounded request admission/drain/no-replay outcomes, per-child recovery and sanitized request telemetry.
 
-Automatic restart/backoff, remote authentication/RBAC, and Gateway-observed MCP request/usage telemetry remain later milestones. M6 SQLite history/metrics/audit persistence is implemented and remains non-authoritative for live control/recovery.
+M8.0 has accepted contracts for bounded unattended checks/preparation/activation/reconciliation/restart and recovery, but those production automation paths are not active until M8.1–M8.8 implementation/qualification. M6 SQLite history/metrics/audit persistence remains non-authoritative for live control/recovery. Remote authentication/RBAC remains M9 scope.
 
 ## Assets
 
@@ -29,6 +29,33 @@ Automatic restart/backoff, remote authentication/RBAC, and Gateway-observed MCP 
 8. Future update orchestration ↔ server-owned component catalog and trusted host runtime roots.
 9. `github_13thx` release provider ↔ fixed GitHub API origin plus server-owned `13thx-mcp` repository policy.
 10. `github_openai` tunnel release provider ↔ fixed GitHub API origin plus exact `openai/tunnel-client` repository policy.
+11. AutomationController ↔ private bounded `runtime/studio/data/automation/state.json`; policy state is not a work/replay queue.
+12. Gateway live request authority ↔ private `runtime/gateway/state/safety-holds.json`; durable holds are sanitized veto state, not request payload persistence.
+13. Fleet host profile schema v3 ↔ rendered Studio automation configuration; Fleet remains desired-state authority for Fleet-managed policy.
+14. Git MCP guarded release control ↔ SemVer prerelease tag identity and exact main/release evidence.
+
+## M8.0 accepted security controls — not active until implemented
+
+ADR 0037–0045 require the following before unattended mutation can be enabled:
+
+- missing M8 config defaults to manual/disabled behavior;
+- AutomationController is the only Studio background policy owner and never persists a replayable mutation queue;
+- corrupt/future automation state blocks destructive automation instead of silently resetting;
+- missed timers collapse to one evaluation; busy/window/hold conditions defer with bounded backoff rather than spin;
+- initial maintenance windows use explicit UTC semantics and backward wall-clock anomalies veto destructive automation;
+- automatic activation revalidates policy/config fingerprint, Gateway safety capability, open hold count, runtime operation ownership, maintenance window, source hygiene, rollback material, installed source version, staged identity, component health and audit admission immediately before side effects;
+- Gateway records server-owned ToolClass in sanitized request telemetry;
+- unsafe terminal Unknown persists an open Gateway safety hold before the terminal result is returned; hold-store failure makes automation safety unavailable;
+- safety-hold resolution never invokes the original tool or synthesizes its result;
+- generic MCP activation uses the existing global M7 drain and targeted child restart/verification; replacing on-disk bytes alone is never treated as running-version success;
+- old Gateway without required M8 capability remains manually compatible but cannot authorize unattended mutation;
+- generic/Gateway/Fleet prepared authorization is process-scoped; previous-process ready staging is never auto-applied;
+- Fleet host schema v3 is the desired-state authority for Fleet-managed automation config, and a pending Studio config restart disables destructive automation in the old process;
+- cleanup is owner/allowlist based and cannot delete component recovery authority merely because it is old;
+- diagnostics are bounded allowlist exports and exclude credentials, raw env and MCP arguments/results;
+- guarded release tagging must support exact SemVer prerelease identity for `v0.8.0-beta`; generic tagging is not an evidence bypass.
+
+These are design commitments until the corresponding R01–R65 permanent tests and M8.8 qualification pass.
 
 ## Active M5.12 security properties
 

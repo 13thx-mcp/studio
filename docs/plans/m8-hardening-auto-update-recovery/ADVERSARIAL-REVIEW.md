@@ -41,6 +41,6 @@ This review tries to make the planned automation unsafe and records the required
 - M8 does not guarantee unattended compatibility across arbitrary major/breaking component releases; target/component safety checks and rollback remain required;
 - diagnostics are for local operator support, not forensic completeness.
 
-## Review gate
+## Review gate — PASS for M8.0
 
-Before M8.0 closes, every row above must map to an accepted ADR and at least one R/Q verification row or be explicitly retired with rationale.
+Every row maps to ADR 0037–0045 and R/Q verification obligations. Production safety remains unproven until those permanent tests execute in M8.1–M8.8.

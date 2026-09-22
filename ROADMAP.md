@@ -1294,7 +1294,7 @@ Gateway is a bounded coordination boundary rather than only a router:
 
 **Target:** `v0.8.0-beta`
 
-**Planning status (2026-09-22):** detailed source audit, architecture, policy/recovery contracts, M8.0–M8.8 execution packages, ADR plan and verification matrix are prepared under `docs/plans/m8-hardening-auto-update-recovery/`. M8.0 contract freeze is ready to begin; production unattended mutation remains blocked until P-01..P-19 and ADR 0037–0045 are resolved. `auto-update-safe` is specifically blocked on durable Gateway unknown-outcome safety holds, targeted child activation, restart-safe staging authorization, shared audit admission, Fleet policy authority and loaded-policy freshness.
+**Planning status (2026-09-22):** M8.0 contract freeze is **VERIFIED**. ADR 0037–0045 are accepted, P-01..P-19 have source-backed dispositions, and R01–R65 define the permanent proof obligations under `docs/plans/m8-hardening-auto-update-recovery/`. M8.1 Automation Foundation is next. `auto-update-safe` remains implementation-blocked until durable Gateway unknown-outcome safety holds, targeted child activation, restart-safe staging authorization, shared audit admission, Fleet policy authority and loaded-policy freshness are implemented and qualified.
 
 ### Goal
 

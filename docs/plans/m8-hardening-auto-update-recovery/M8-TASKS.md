@@ -1,32 +1,32 @@
 # M8 Dependency-Ordered Execution Checklist
 
-**State:** PLANNING / NOT IMPLEMENTED  
-**Target:** Studio v0.8.0-beta  
+**State:** PLANNING / NOT IMPLEMENTED
+**Target:** Studio v0.8.0-beta
 **Entry:** M7 v0.7.1 exact-main qualification green.
 
 ## M8.0 — Architecture, policy and recovery freeze
 
-- [ ] Re-run source audit against current Studio/Gateway/Fleet heads.
-- [ ] Resolve P-01 through P-19.
-- [ ] Accept/amend ADR 0037–0044.
-- [ ] Freeze additive automation config schema/defaults and Fleet host-profile ownership.
-- [ ] Freeze AutomationState schema/path/atomicity/size bounds.
-- [ ] Freeze scheduler missed-tick, UTC window, clock anomaly and retry semantics.
-- [ ] Freeze failure-vs-deferral taxonomy.
-- [ ] Freeze Gateway M8 capability advertisement.
-- [ ] Freeze request-class telemetry addition.
-- [ ] Freeze durable Gateway safety-hold schema and persistence ordering.
-- [ ] Freeze hold resolution semantics; prove no replay.
-- [ ] Freeze targeted Gateway child activation contract.
-- [ ] Freeze component activation/ownership matrix.
-- [ ] Freeze health snapshot/freshness model.
-- [ ] Freeze process-scoped prepared-authorization rule.
-- [ ] Freeze staging TTL/disk-budget/cleanup ownership.
-- [ ] Freeze source-present Git hygiene rule.
-- [ ] Freeze reconciliation retry/circuit contract.
-- [ ] Freeze diagnostics allowlist/caps.
-- [ ] Freeze component target versions and guarded prerelease release-tag contract.
-- [ ] Update threat model/architecture before production coding.
+- [x] Re-run source audit against current Studio/Gateway/Fleet heads.
+- [x] Resolve P-01 through P-19.
+- [x] Accept/amend ADR 0037–0044.
+- [x] Freeze additive automation config schema/defaults and Fleet host-profile ownership.
+- [x] Freeze AutomationState schema/path/atomicity/size bounds.
+- [x] Freeze scheduler missed-tick, UTC window, clock anomaly and retry semantics.
+- [x] Freeze failure-vs-deferral taxonomy.
+- [x] Freeze Gateway M8 capability advertisement.
+- [x] Freeze request-class telemetry addition.
+- [x] Freeze durable Gateway safety-hold schema and persistence ordering.
+- [x] Freeze hold resolution semantics; prove no replay.
+- [x] Freeze targeted Gateway child activation contract.
+- [x] Freeze component activation/ownership matrix.
+- [x] Freeze health snapshot/freshness model.
+- [x] Freeze process-scoped prepared-authorization rule.
+- [x] Freeze staging TTL/disk-budget/cleanup ownership.
+- [x] Freeze source-present Git hygiene rule.
+- [x] Freeze reconciliation retry/circuit contract.
+- [x] Freeze diagnostics allowlist/caps.
+- [x] Freeze component target versions and guarded prerelease release-tag contract.
+- [x] Update threat model/architecture before production coding.
 
 **Exit:** no unresolved ambiguity can cause automatic replay, competing restart owners, unsafe child replacement, unbounded retry, or cleanup of recovery authority.
 

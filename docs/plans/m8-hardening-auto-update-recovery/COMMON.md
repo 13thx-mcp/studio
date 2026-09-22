@@ -117,7 +117,7 @@ Policy deferral caused by maintenance window, active operation, safety hold or d
 
 ## Component target versions
 
-Proposed independent M8 targets, subject to M8.0 freeze:
+Frozen independent M8 targets from M8.0:
 
 ```text
 Studio      0.8.0-beta

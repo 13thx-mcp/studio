@@ -1,8 +1,8 @@
 # Mission 8 — Hardening, Auto-Update Policy & Recovery
 
-**State:** PLANNING / CONTRACT FREEZE IN PROGRESS  
-**Target:** Studio `v0.8.0-beta`  
-**Entry baseline:** Studio `v0.7.1`, M7 exact-main closure at `ab9aca19c3fc6091ca3d9d169f5fc2a314b8d476`  
+**State:** M8.0 VERIFIED / CONTRACT FROZEN / M8.1 READY
+**Target:** Studio `v0.8.0-beta`
+**Entry baseline:** Studio `v0.7.1`, M7 exact-main closure at `ab9aca19c3fc6091ca3d9d169f5fc2a314b8d476`
 **Primary repositories:** Studio, Gateway, Fleet, and Git MCP for guarded release-control changes; other generic MCP repositories participate in compatibility/activation verification but do not gain broad new authority.
 
 ## Purpose
@@ -50,7 +50,7 @@ No automatic activation may occur unless every component-specific and global saf
 
 ## Read order
 
-1. [SOURCE-AUDIT.md](SOURCE-AUDIT.md)
+1. [SOURCE-AUDIT.md](SOURCE-AUDIT.md) and [M8.0 source spikes](M8.0-SOURCE-SPIKES.md)
 2. [COMMON.md](COMMON.md)
 3. [ARCHITECTURE.md](ARCHITECTURE.md)
 4. [POLICY-AND-SCHEDULING.md](POLICY-AND-SCHEDULING.md)

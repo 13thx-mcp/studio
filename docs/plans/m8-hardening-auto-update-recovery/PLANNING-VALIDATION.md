@@ -1,7 +1,7 @@
 # M8 Planning Validation
 
-**Review date:** 2026-09-22  
-**State:** PLANNING PACKAGE REVIEWED / M8.0 READY / PRODUCTION IMPLEMENTATION BLOCKED ON CONTRACT FREEZE
+**Review date:** 2026-09-22
+**State:** M8.0 VERIFIED / CONTRACT FROZEN / M8.1 READY
 
 ## Package completeness
 
@@ -70,7 +70,7 @@ Managed Studio config may change and require restart.
 
 M8 roadmap target is `v0.8.0-beta`, while the current guarded Git release-tag operation accepts only plain `vMAJOR.MINOR.PATCH`.
 
-**Disposition:** M8.0 must either accept guarded SemVer prerelease support in Git MCP or explicitly change the target. The proposed direction is guarded prerelease support; generic tagging must not be used to bypass release evidence.
+**Disposition:** ADR 0045 accepts guarded SemVer prerelease support in Git MCP; generic tagging must not be used to bypass release evidence.
 
 ## Scope review
 
@@ -90,11 +90,11 @@ M8 does require narrow compatibility/capability checks necessary for its own saf
 
 ### Ready now
 
-M8.0 documentation/ADR work and source spikes may begin.
+M8.1 Automation Foundation may begin from ADR 0037/0038/0043 and the frozen source-spike baseline.
 
-### Blocked until M8.0 exit
+### Still blocked
 
-Any production background staging/restart/reconcile code.
+Automatic activation (M8.4) remains hard-blocked until the implemented M8.2/M8.6 Gateway/health/hazard capabilities qualify.
 
 ### Hard-blocked until specific prerequisites qualify
 
@@ -110,4 +110,4 @@ Any production background staging/restart/reconcile code.
 
 ## Review conclusion
 
-The package is internally suitable to begin M8.0 contract/ADR implementation. The dependency graph deliberately prevents the highest-risk feature, automatic activation, from being implemented first.
+M8.0 is closed as a contract/design gate. M8.1 Automation Foundation is the next executable package; the dependency graph continues to prevent automatic activation from being implemented before its health/hazard prerequisites.

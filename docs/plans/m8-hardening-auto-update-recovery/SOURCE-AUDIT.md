@@ -14,7 +14,7 @@ This audit records implementation prerequisites, not defects already claimed fix
 6. Fleet already owns deterministic pure rendering and runtime-only deployment contracts.
 7. M6 already stores sanitized audit/history projections and must remain historical only.
 
-## Blocking and design prerequisites
+## M8.0 prerequisites — contract-resolved, implementation pending
 
 ### P-01 — no automation policy/scheduler configuration
 
@@ -131,10 +131,38 @@ Runtime reconciliation already tracks `studio_restart_required` / loaded config 
 
 M8 roadmap target is `v0.8.0-beta`, while the guarded Git release-tag operation currently enforces plain `vMAJOR.MINOR.PATCH`. Using generic tagging would bypass exact release-evidence enforcement.
 
-**M8 disposition:** extend Git MCP guarded release tagging to validated SemVer prerelease identifiers and exact release-evidence matching, or explicitly change the M8 release target before implementation closes. Proposed direction: guarded prerelease support, target Git MCP 0.2.0.
+**M8.0 disposition:** ADR 0045 accepts guarded SemVer prerelease support with exact release-prep/tag identity on the existing evidence-gated path. Git MCP target is 0.2.0; M8 remains `v0.8.0-beta`.
+## M8.0 resolution matrix
+
+| Prerequisite | Contract disposition |
+|---|---|
+| P-01 automation config/scheduler absent | Resolved by ADR 0037, ADR 0038 and ADR 0043 |
+| P-02 runtime coordinator introspection | Resolved by ADR 0037 |
+| P-03 Studio drops Gateway live safety fields | Resolved by ADR 0041 |
+| P-04 telemetry lacks request class | Resolved by ADR 0040 |
+| P-05 unknown outcome lacks durable hold | Resolved by ADR 0040 |
+| P-06 generic update lacks Gateway child coordination | Resolved by ADR 0041 |
+| P-07 process-local prepared transaction authorization | Resolved by ADR 0039 |
+| P-08 staging retention/budget absent | Resolved by ADR 0039 and ADR 0044 |
+| P-09 reconciliation retry/circuit absent | Resolved by ADR 0038 and ADR 0043 |
+| P-10 restart ownership fragmented | Resolved by ADR 0042 |
+| P-11 common health evidence absent | Resolved by ADR 0042 |
+| P-12 dirty source not activation gate | Resolved by ADR 0039 |
+| P-13 audit admission API-shaped | Resolved by ADR 0037 |
+| P-14 maintenance-window semantics absent | Resolved by ADR 0038 |
+| P-15 self-update exits controller process | Resolved by ADR 0037 and existing durable self-update authority |
+| P-16 diagnostics bundle absent | Resolved by ADR 0044 |
+| P-17 Fleet automation desired-state authority absent | Resolved by ADR 0043 |
+| P-18 old process may hold stale policy | Resolved by ADR 0043 |
+| P-19 guarded prerelease tag unsupported | Resolved by ADR 0045 |
+
+Source feasibility for these dispositions is recorded in [M8.0-SOURCE-SPIKES.md](M8.0-SOURCE-SPIKES.md).
+
+"Resolved" here means the architecture/test contract is frozen. It does not claim the production implementation exists.
+
 ## Cross-repository prerequisites that block auto-update-safe
 
-The following must be resolved before M8.4 can enable automatic activation:
+The following are resolved at contract level but remain implementation/qualification blockers before M8.4 can enable automatic activation:
 
 - P-03 live Gateway safety snapshot;
 - P-04/P-05 durable classed unknown-outcome safety holds;
