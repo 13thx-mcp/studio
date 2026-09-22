@@ -10,7 +10,7 @@ Milestones 0–4 provide MCP supervision, the browser dashboard, secure-tunnel l
 
 M6 adds private SQLite-backed operational history, typed audit admission/outcome evidence, Studio/MCP/Tunnel observation sessions, update/artifact/install lineage, configuration/drift history, replay-safe metrics, bounded retention, and historical REST/realtime/UI. Registry/configuration files and live runtime/update owners remain authoritative; SQLite is historical evidence only and never resumes recovery or rehydrates live authority.
 
-M7 is closed: Gateway now owns bounded request admission/drain/concurrency, no-replay unknown outcomes, per-child recovery, strict policy/profiles, bounded payload/artifact handling, resources/progress and sanitized request/recovery telemetry; Filesystem revision/CAS and Exec cancellation are part of the qualified baseline. M8.0 has accepted the unattended hardening contracts, but M8 production automation is not implemented yet. Remote authentication/RBAC remains M9 scope.
+M7 is closed. M8.0 contracts, M8.1 automation foundation, and M8.2 health/restart safety are implemented/qualified. Studio now has typed health/freshness evidence and bounded restart policy for processes it directly owns; Gateway exposes additive child-status capability while retaining Gateway ownership of child recovery. Provider checking/staging, durable unknown-outcome holds, targeted child restart, automatic activation and reconciliation mutation remain later M8 packages. Remote authentication/RBAC remains M9 scope.
 
 A proposed post-M7 Workspace Skill Runtime is documented in ADR 0036 and `docs/plans/workspace-skill-runtime/`. It does not change the current M7 implementation boundary: Gateway remains the external MCP request/safety boundary, typed MCPs remain concrete capability boundaries, and Studio would provide operator inventory/policy/evidence surfaces rather than becoming a general-purpose remote worker.
 
@@ -27,7 +27,7 @@ A proposed post-M7 Workspace Skill Runtime is documented in ADR 0036 and `docs/p
 - `web`: React + TypeScript + Vite operational dashboard with Registry/Discovery, Updates/Fleet controls, and M6 historical views.
 - `metrics`: M6 historical aggregation definitions and replay-safe bounded metric buckets plus sanitized M7 Gateway request/catalog/recovery history projections.
 - `storage`: M6 private SQLite history/audit store, migrations, bounded worker queues/readers, retention, backup and historical query projections.
-- `automation`: M8.1 single background policy/scheduling foundation with bounded durable state, UTC schedule/circuit/deferral primitives, RuntimeOperationCoordinator observation and shared audit admission. It currently performs no provider check, staging, restart, activation or reconciliation mutation; later M8 packages attach those typed handlers behind the frozen SafetyGate.
+- `automation`: M8.1 single background policy/scheduling foundation with bounded durable state, UTC schedule/circuit/deferral primitives, RuntimeOperationCoordinator observation and shared audit admission. M8.2 adds typed health/freshness evidence plus bounded restart ownership for Studio-supervised MCP/Tunnel processes. Provider check/staging and mutation handlers remain attached only by later packages behind frozen safety gates.
 - `logging`: structured logging initialization.
 - `error`: shared typed error boundary.
 

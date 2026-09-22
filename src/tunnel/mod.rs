@@ -21,7 +21,9 @@ use tokio::{
 use crate::{
     error::{StudioError, StudioResult},
     realtime::{EventHub, StudioEvent},
+    reliability::{RestartEpisode, RestartOwnerContext, RestartPolicy},
     storage::{HistoryHandle, LifecycleEndKind, LifecycleOwnerKind, LifecycleSessionContext},
+    update::RuntimeOperationCoordinator,
 };
 
 #[derive(Debug, Deserialize)]
@@ -114,6 +116,10 @@ pub struct TunnelStatus {
     pub uptime_ms: Option<u64>,
     pub restart_count: u64,
     pub crash_count: u64,
+    pub desired_running: bool,
+    pub restart_state: &'static str,
+    pub consecutive_restart_failures: u32,
+    pub retry_at_ms: Option<u64>,
     pub last_exit_code: Option<i32>,
     pub last_error: Option<String>,
 }
@@ -181,6 +187,8 @@ struct RuntimeState {
     generation: u64,
     launch_evidence: Option<TunnelLaunchEvidence>,
     history_session: Option<LifecycleSessionContext>,
+    desired_running: bool,
+    restart_episode: RestartEpisode,
 }
 
 impl Default for RuntimeState {
@@ -198,6 +206,8 @@ impl Default for RuntimeState {
             generation: 0,
             launch_evidence: None,
             history_session: None,
+            desired_running: false,
+            restart_episode: RestartEpisode::default(),
         }
     }
 }
@@ -214,6 +224,10 @@ impl RuntimeState {
                 .map(|started| u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)),
             restart_count: self.restart_count,
             crash_count: self.crash_count,
+            desired_running: self.desired_running,
+            restart_state: self.restart_episode.phase.as_str(),
+            consecutive_restart_failures: self.restart_episode.consecutive_failures,
+            retry_at_ms: self.restart_episode.retry_at_ms,
             last_exit_code: self.last_exit_code,
             last_error: self.last_error.clone(),
         }
@@ -252,6 +266,8 @@ pub struct TunnelSupervisor {
     stop_timeout: Duration,
     base_dir: Arc<PathBuf>,
     history: Option<HistoryHandle>,
+    restart_policy: RestartPolicy,
+    runtime_operations: Option<Arc<RuntimeOperationCoordinator>>,
 }
 
 impl TunnelSupervisor {
@@ -262,7 +278,15 @@ impl TunnelSupervisor {
         base_dir: PathBuf,
         events: EventHub,
     ) -> Self {
-        Self::new_internal(config, log_capacity, stop_timeout, base_dir, events, None)
+        Self::new_internal(
+            config,
+            log_capacity,
+            stop_timeout,
+            base_dir,
+            events,
+            None,
+            (RestartPolicy::disabled(), None),
+        )
     }
 
     pub fn new_with_history(
@@ -280,6 +304,27 @@ impl TunnelSupervisor {
             base_dir,
             events,
             Some(history),
+            (RestartPolicy::disabled(), None),
+        )
+    }
+
+    pub fn new_with_history_and_restart(
+        config: TunnelConfig,
+        log_capacity: usize,
+        stop_timeout: Duration,
+        base_dir: PathBuf,
+        events: EventHub,
+        history: HistoryHandle,
+        restart: RestartOwnerContext,
+    ) -> Self {
+        Self::new_internal(
+            config,
+            log_capacity,
+            stop_timeout,
+            base_dir,
+            events,
+            Some(history),
+            (restart.policy, Some(restart.runtime_operations)),
         )
     }
 
@@ -290,7 +335,9 @@ impl TunnelSupervisor {
         base_dir: PathBuf,
         events: EventHub,
         history: Option<HistoryHandle>,
+        restart: (RestartPolicy, Option<Arc<RuntimeOperationCoordinator>>),
     ) -> Self {
+        let (restart_policy, runtime_operations) = restart;
         Self {
             config: Arc::new(config),
             runtime: Arc::new(Mutex::new(RuntimeState::default())),
@@ -299,6 +346,8 @@ impl TunnelSupervisor {
             stop_timeout,
             base_dir: Arc::new(base_dir),
             history,
+            restart_policy,
+            runtime_operations,
         }
     }
 
@@ -557,6 +606,7 @@ impl TunnelSupervisor {
                 TunnelState::Stopped | TunnelState::Failed => {}
                 _ => return Err(StudioError::AlreadyRunning("tunnel".into())),
             }
+            state.desired_running = true;
             state.state = TunnelState::Starting;
             state.last_error = None;
             state.generation = state.generation.wrapping_add(1);
@@ -617,6 +667,7 @@ impl TunnelSupervisor {
             state.started_at = Some(Instant::now());
             state.last_exit_code = None;
             state.last_error = None;
+            state.restart_episode.on_started();
             state.history_session = history_session.clone();
             state.launch_evidence = Some(TunnelLaunchEvidence {
                 generation,
@@ -679,9 +730,10 @@ impl TunnelSupervisor {
         let capacity = self.log_capacity;
         let name = self.config.name.clone();
         let history = self.history.clone();
+        let supervisor = self.clone();
         tokio::spawn(async move {
             let result = child.wait().await;
-            let (status, entry, terminal) = {
+            let (status, entry, terminal, retry_at_ms) = {
                 let mut state = runtime.lock().await;
                 if state.generation != generation {
                     return;
@@ -729,12 +781,24 @@ impl TunnelSupervisor {
                         )
                     }
                 };
+                let retry_at_ms = if is_crash && state.desired_running {
+                    state.restart_episode.record_failure(
+                        now_ms(),
+                        exact_duration.map(|duration| {
+                            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+                        }),
+                        supervisor.restart_policy,
+                    )
+                } else {
+                    None
+                };
                 let entry = state.push_log(capacity, TunnelLogStream::Studio, message);
                 (
                     state.status(&name, true),
                     entry,
                     history_session
                         .map(|context| (context, end_kind, exit_code, is_crash, exact_duration)),
+                    retry_at_ms,
                 )
             };
             if let (Some(history), Some((context, end_kind, exit_code, is_crash, duration))) =
@@ -744,6 +808,7 @@ impl TunnelSupervisor {
             }
             events.publish(StudioEvent::TunnelLog { entry });
             events.publish(StudioEvent::TunnelStatus { status });
+            let _ = retry_at_ms;
         });
 
         Ok(self.status().await)
@@ -752,6 +817,8 @@ impl TunnelSupervisor {
     pub async fn stop(&self) -> StudioResult<TunnelStatus> {
         let pid = {
             let mut state = self.runtime.lock().await;
+            state.desired_running = false;
+            state.restart_episode.clear();
             match state.state {
                 TunnelState::Running | TunnelState::Starting => {
                     let Some(pid) = state.pid else {
@@ -850,6 +917,56 @@ impl TunnelSupervisor {
         self.events.publish(StudioEvent::TunnelStatus {
             status: self.status().await,
         });
+    }
+
+    pub async fn next_restart_due_ms(&self) -> Option<u64> {
+        let state = self.runtime.lock().await;
+        if state.desired_running && state.state == TunnelState::Failed {
+            state.restart_episode.retry_at_ms
+        } else {
+            None
+        }
+    }
+
+    pub async fn process_due_restart(&self, now_ms: u64) {
+        if !self.restart_policy.enabled {
+            return;
+        }
+        let busy = self.runtime_operations.as_ref().is_some_and(|coordinator| {
+            coordinator
+                .snapshot()
+                .map(|snapshot| !snapshot.is_idle())
+                .unwrap_or(true)
+        });
+        let due = {
+            let mut state = self.runtime.lock().await;
+            if !state.desired_running
+                || state.state != TunnelState::Failed
+                || !state.restart_episode.ready(now_ms)
+            {
+                false
+            } else if busy {
+                state
+                    .restart_episode
+                    .defer_without_failure(now_ms, self.restart_policy);
+                false
+            } else {
+                state.restart_count = state.restart_count.saturating_add(1);
+                true
+            }
+        };
+        if !due {
+            return;
+        }
+        if let Err(error) = self.start().await {
+            tracing::warn!(%error, "automatic tunnel restart attempt failed");
+            let mut state = self.runtime.lock().await;
+            if state.desired_running {
+                state
+                    .restart_episode
+                    .record_failure(now_ms, Some(0), self.restart_policy);
+            }
+        }
     }
 
     async fn wait_for_terminal_state(&self) -> StudioResult<()> {
@@ -956,6 +1073,14 @@ fn configure_tunnel_command(
     for key in RESERVED_TUNNEL_RUNTIME_ENV {
         command.env_remove(key);
     }
+}
+
+fn now_ms() -> u64 {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    u64::try_from(millis).unwrap_or(u64::MAX)
 }
 
 fn resolve_lexical(base_dir: &Path, path: &Path) -> PathBuf {
@@ -1640,6 +1765,10 @@ mod tests {
             uptime_ms: None,
             restart_count: 0,
             crash_count: 0,
+            desired_running: false,
+            restart_state: "healthy",
+            consecutive_restart_failures: 0,
+            retry_at_ms: None,
             last_exit_code: None,
             last_error: None,
         };

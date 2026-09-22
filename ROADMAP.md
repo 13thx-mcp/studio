@@ -1294,7 +1294,7 @@ Gateway is a bounded coordination boundary rather than only a router:
 
 **Target:** `v0.8.0-beta`
 
-**Implementation status (2026-09-22):** M8.0 contract freeze and M8.1 Automation Foundation are **VERIFIED / CLOSED**. M8.1 adds manual-default automation config, confined durable policy state, deterministic scheduler/circuit/deferral primitives, RuntimeOperationCoordinator introspection, shared audit admission and bounded controller startup/shutdown with no automatic update/reconciliation mutation. M8.2 Health/Restart/Gateway Safety and M8.3 Check/Notify/Auto-Prepare are next. `auto-update-safe` remains implementation-blocked until durable Gateway unknown-outcome safety holds, targeted child activation, restart-safe staging authorization, Fleet policy authority and loaded-policy freshness are implemented and qualified.
+**Implementation status (2026-09-23):** M8.0–M8.2 are **VERIFIED / CLOSED**. M8.2 adds typed health/freshness evidence, bounded Studio-owned MCP/Tunnel restart policy, runtime-operation restart suppression, and additive Gateway `m8_child_status` safety snapshots. Gateway intentionally keeps `automation_safety_available=false` until M8.6 durable unknown-outcome holds exist. M8.3 Check/Notify/Auto-Prepare is in progress. `auto-update-safe` remains blocked on M8.6 targeted child/safety-hold primitives, restart-safe staging authorization, Fleet policy authority and loaded-policy freshness.
 
 ### Goal
 

@@ -4,7 +4,7 @@
 
 MCP Studio is a privileged local control plane. The closed M7 baseline can supervise registered MCP/tunnel processes, discover/select/stage trusted releases, transactionally update generic MCP/Gateway/Fleet/Tunnel/Studio runtime units, reconcile Fleet-managed runtime config, persist bounded audit/history evidence, and operate a Gateway that owns bounded request admission/drain/no-replay outcomes, per-child recovery and sanitized request telemetry.
 
-M8.0 contracts are frozen and M8.1 automation foundation is implemented/qualified: manual-safe config defaults, confined bounded policy state, scheduler/circuit/deferral primitives, coordinator introspection and shared audit admission are active. Provider checking, staging, automatic restart, activation and reconciliation mutation remain disabled until their later M8 packages qualify. M6 SQLite history/metrics/audit persistence remains non-authoritative for live control/recovery. Remote authentication/RBAC remains M9 scope.
+M8.0 contracts and M8.1/M8.2 foundations are implemented/qualified: manual-safe policy state/scheduling, typed health/freshness, and bounded Studio-owned MCP/Tunnel restart behavior are active. Gateway exposes child-status capability, but `automation_safety_available` remains false until M8.6 durable unknown-outcome holds exist. Provider checking/staging, automatic activation and reconciliation mutation remain disabled until later M8 packages qualify. M6 SQLite history remains non-authoritative for live control/recovery. Remote authentication/RBAC remains M9 scope.
 
 ## Assets
 

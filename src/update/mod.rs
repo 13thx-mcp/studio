@@ -25,8 +25,9 @@ mod thirteenthx;
 mod transaction;
 mod tunnel_update;
 pub use fleet::FleetUpdateManager;
-pub use gateway::GatewayControlClient;
-pub use gateway::GatewayUpdateManager;
+pub use gateway::{
+    GatewayChildSummary, GatewayControlClient, GatewaySafetyStatus, GatewayUpdateManager,
+};
 pub use inventory::{
     CheckStatus, HostMode, InventoryEntry, InventoryHealth, InventoryService, InventoryView,
     ReleaseCheckView, RunningIdentityProvider, RuntimeInstalledIdentityProvider,

@@ -1,6 +1,6 @@
 # Mission 8 — Hardening, Auto-Update Policy & Recovery
 
-**State:** M8.0 VERIFIED / M8.1 VERIFIED-CLOSED / M8.2 + M8.3 READY
+**State:** M8.0–M8.2 VERIFIED-CLOSED / M8.3 IN PROGRESS
 **Target:** Studio `v0.8.0-beta`
 **Entry baseline:** Studio `v0.7.1`, M7 exact-main closure at `ab9aca19c3fc6091ca3d9d169f5fc2a314b8d476`
 **Primary repositories:** Studio, Gateway, Fleet, and Git MCP for guarded release-control changes; other generic MCP repositories participate in compatibility/activation verification but do not gain broad new authority.
@@ -58,7 +58,7 @@ No automatic activation may occur unless every component-specific and global saf
 6. [ADR-PLAN.md](ADR-PLAN.md)
 7. [M8-TASKS.md](M8-TASKS.md)
 8. [M8-VERIFICATION-MATRIX.md](M8-VERIFICATION-MATRIX.md)
-9. [M8.1 qualification](M8.1-QUALIFICATION.md), then package plans M8.2 → M8.8 in dependency order.
+9. [M8.1 qualification](M8.1-QUALIFICATION.md) and [M8.2 qualification](M8.2-QUALIFICATION.md), then package plans M8.3 → M8.8 in dependency order.
 
 ## Package map
 
