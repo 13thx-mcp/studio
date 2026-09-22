@@ -1,6 +1,6 @@
-# M7 Verification Matrix — Draft
+# M7 Verification Matrix — Qualified Implementation Baseline
 
-Requirement IDs are stable planning handles. Implementation rows remain NOT STARTED until permanent tests and current evidence are linked.
+Requirement IDs are stable handles. Current qualification evidence and exact commits are recorded in [M7-QUALIFICATION.md](M7-QUALIFICATION.md). Requirements R34/R35 were explicitly retired by ADR 0034 because workspace aliases are not part of M7; they are not reported as implementation PASS.
 
 | ID | Requirement | Minimum permanent proof | Package |
 |---|---|---|---|
@@ -37,8 +37,8 @@ Requirement IDs are stable planning handles. Implementation rows remain NOT STAR
 | R31 | profiles never exceed child base allowlist | policy expansion test | M7.6 |
 | R32 | profile change emits tools/list_changed | protocol integration test | M7.6 |
 | R33 | control tools absent from normal coding profile | tools/list assertion | M7.6 |
-| R34 | alias ambiguity fails closed | alias resolution test | M7.6 |
-| R35 | alias binding cannot escape underlying root policy | confinement test | M7.6 |
+| R34 | **RETIRED by ADR 0034:** workspace aliases are not part of M7 | contract audit confirms no alias surface | M7.6 |
+| R35 | **RETIRED by ADR 0034:** no alias binding exists in M7 | target MCP confinement remains authoritative | M7.6 |
 | R36 | resource aggregation handles collisions deterministically | two-child resource fixture | M7.6 |
 | R37 | progress forwards without becoming terminal state | progress + delayed result fixture | M7.6 |
 | R38 | request/outcome metrics persist without tool arguments/results | DB content assertion | M7.7 |
@@ -48,8 +48,8 @@ Requirement IDs are stable planning handles. Implementation rows remain NOT STAR
 | R42 | tunnel adapter keeps liveness/readiness/MCP discovery/poll health distinct | multi-state fixture | M7.8 |
 | R43 | full client + runtime-cloudflared are exact same-release verified assets and report matching version/commit | dual-asset/version/hash test | M7.8 |
 | R44 | dual-artifact tunnel upgrade preserves config/credentials, Studio daemon ownership and rollback | running/stopped update matrix | M7.8 |
-| R45 | source-less package contains both verified tunnel executables and works without source/toolchains | source-less package smoke | M7.9 |
-| R46 | long-running concurrency is bounded under soak | soak + memory/task count bound | M7.9 |
+| R45 | runtime-only integration works with absent source root and deployed runtime artifacts | explicit runtime-only reconciliation smoke | M7.9 |
+| R46 | scheduler active/queued obligations stay bounded and leak-free under sustained admission | 4,000-admission bounded scheduler soak | M7.9 |
 | R47 | M5 transactional update/rollback regressions remain green | exact M5 regression suite | M7.9 |
 | R48 | M6 authority/privacy/retention regressions remain green | exact M6 regression suite | M7.9 |
 | R49 | clean-source provenance is recorded | qualification manifest | M7.9 |
@@ -99,8 +99,8 @@ Exercise selected full-client/native adapter on the supported darwin-arm64 artif
 Run supported Studio/Gateway/Filesystem/Tunnel integration from release/runtime artifacts without Rust, Node, source repositories or local target directories.
 
 ### Q14 — Soak/fault injection
-Sustain mixed read/mutation/long-running traffic with child crashes, queue pressure, caller cancellations and payload guards. Prove queue/task/disk bounds.
+Use composite permanent evidence: sustained scheduler admission soak plus cancellation, queue-expiry, child crash/circuit, failed catalog refresh, drain, and artifact disk-pressure fault tests. Prove bounded coordinator/disk obligations without requiring one monolithic scenario.
 
 ## Closure rule
 
-M7 cannot close with any R01–R50 mandatory row lacking a permanent test and current qualification evidence. If a protocol feature cannot be supported by the locked rmcp/upstream tunnel contract, M7.0 must revise the requirement explicitly rather than silently omitting the test.
+M7 cannot close with any active R01–R52 row lacking permanent proof and current qualification evidence. R34/R35 are explicitly retired by ADR 0034 rather than silently omitted. If a future contract reintroduces aliases, new active verification rows are required.

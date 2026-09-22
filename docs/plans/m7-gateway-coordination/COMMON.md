@@ -8,7 +8,7 @@
 - Typed child MCPs remain authoritative for their domain side effects.
 - Studio/Fleet remain authoritative for version, verified artifact activation, rollback, desired configuration and operator lifecycle policy.
 - M6 SQLite is authoritative only for committed historical records/projections; it never dispatches, retries, resumes or authorizes requests.
-- Workspace/session aliases are convenience metadata only.
+- Workspace/session aliases are not part of M7. Explicit target MCP roots/capabilities remain authoritative.
 - Request/correlation IDs are observability identity only, never authorization or idempotent replay authority.
 
 ## 2. Request lifecycle
@@ -260,7 +260,7 @@ Resources are read-oriented and bounded. Aggregation preserves child identity an
 
 Progress forwarding is informational. It must never mark a request committed or terminal.
 
-Workspace aliases resolve to explicit workspace/root identifiers, then underlying MCP confinement is re-applied. Alias/session binding cannot expand capability.
+Workspace aliases are deliberately absent from M7. There is no alias/session binding layer between Gateway routing and the target MCP. A future alias feature requires a separate ADR and must re-prove underlying MCP confinement.
 
 ## 13. M6 telemetry boundary
 

@@ -1,6 +1,6 @@
 # Mission 7 — Gateway Coordination, Concurrency & Tool Safety
 
-**State:** M7.0 FROZEN / REQUEST COORDINATOR IN PROGRESS  
+**State:** M7.0 FROZEN / M7.1–M7.8 IMPLEMENTED / M7.9 QUALIFIED ON CLOSURE BRANCHES / FINAL MAIN INTEGRATION PENDING
 **Studio planning baseline:** `main` at `48906d892fb37275f8b2d10b73b7cad1eec355c9` (clean, `origin/main` aligned).  
 **Gateway audit baseline:** `main` at `02a46af100c0cee5e011b8bc74079d7a78dd3658` (clean).  
 **Filesystem audit baseline:** `main` at `0f09a665bb94af8388e01051d87cb3f865d4310d` (clean).  
@@ -42,6 +42,7 @@ The plan deliberately does **not** create a general-purpose worker, make chat/se
 - [ADR 0034 — Gateway profile/resource/progress boundary](../../adr/0034-gateway-profile-resource-progress-boundary.md)
 - [ADR 0035 — Gateway history privacy events](../../adr/0035-gateway-history-privacy-events.md)
 - [M7 Studio ↔ Gateway integration](M7-STUDIO-INTEGRATION.md)
+- [M7 qualification and closure audit](M7-QUALIFICATION.md)
 
 ## Package map
 
@@ -53,7 +54,7 @@ The plan deliberately does **not** create a general-purpose worker, make chat/se
 | M7.3 | per-child restart backoff, crash-loop detection, circuit breaker, sibling isolation | gateway |
 | M7.4 | Filesystem v2 range/search/metadata/revision/CAS/patch | filesystem |
 | M7.5 | request/response budgets, oversized-result guards, ephemeral artifacts | gateway |
-| M7.6 | profiles, workspace aliases/context, resources and progress forwarding | gateway, fleet |
+| M7.6 | profiles, explicit workspace context, resources and progress forwarding; aliases retired by ADR 0034 | gateway, fleet |
 | M7.7 | Gateway request/resilience/payload telemetry into M6 history | gateway, studio |
 | M7.8 | official tunnel-client native runtime adapter and release-layout decision | studio, fleet |
 | M7.9 | source-less/native qualification, soak/fault injection, release closure | all affected repos |
@@ -101,5 +102,6 @@ Read in this order:
 5. [M7-TASKS.md](M7-TASKS.md)
 6. [M7-VERIFICATION-MATRIX.md](M7-VERIFICATION-MATRIX.md)
 7. [M7-STUDIO-INTEGRATION.md](M7-STUDIO-INTEGRATION.md)
+8. [M7-QUALIFICATION.md](M7-QUALIFICATION.md)
 
 Do not start production M7 code until every M7.0 blocking prerequisite is either resolved or explicitly accepted with a testable alternative.
