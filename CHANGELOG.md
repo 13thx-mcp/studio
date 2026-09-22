@@ -16,6 +16,7 @@ The project follows Semantic Versioning once public/pre-release artifacts begin.
 ### Verified
 
 - M8.1 exact-source qualification at `2718ab2` passes 308 Studio tests plus full M5/M6/M7 cross-repository/runtime-only regression gates.
+- M8.2 health/restart qualification passes 322 Studio tests and 52 Gateway tests, with additive child-status capability and fail-closed old-Gateway compatibility.
 
 ## [0.7.1] - 2026-09-22
 

@@ -51,18 +51,18 @@
 
 ## M8.2 — Health, restart reliability and Gateway safety snapshot
 
-- [ ] Define typed HealthSnapshot/freshness.
-- [ ] Add component-specific health adapters.
-- [ ] Extend Gateway control response consumption with active/queued/generation/capabilities.
-- [ ] Add Gateway child summary/identity capability required by activation contract.
-- [ ] Old Gateway compatibility: read/manual works; automatic mutation unavailable.
-- [ ] Add Supervisor auto-restart disabled/on-failure policy.
-- [ ] Add Tunnel auto-restart disabled/on-failure policy.
-- [ ] Preserve explicit-stop suppression.
-- [ ] Suppress restart while update/reconciliation owns component.
-- [ ] Add bounded exponential backoff/stability window/circuit.
-- [ ] Keep Gateway child restart exclusively Gateway-owned.
-- [ ] Add crash-loop/fake-time/ownership tests.
+- [x] Define typed HealthSnapshot/freshness.
+- [x] Add component-specific health adapters.
+- [x] Extend Gateway control response consumption with active/queued/generation/capabilities.
+- [x] Add Gateway child summary/identity capability required by activation contract.
+- [x] Old Gateway compatibility: read/manual works; automatic mutation unavailable.
+- [x] Add Supervisor auto-restart disabled/on-failure policy.
+- [x] Add Tunnel auto-restart disabled/on-failure policy.
+- [x] Preserve explicit-stop suppression.
+- [x] Suppress restart while update/reconciliation owns component.
+- [x] Add bounded exponential backoff/stability window/circuit.
+- [x] Keep Gateway child restart exclusively Gateway-owned.
+- [x] Add crash-loop/fake-time/ownership tests.
 
 **Exit:** automation can obtain fresh typed safety evidence and process owners cannot enter competing restart loops.
 
