@@ -212,6 +212,7 @@ async fn main() -> Result<()> {
         activation_runtime_root.clone(),
         Some(automation_policy_fingerprint),
         runtime_operations.clone(),
+        operations.clone(),
     ));
     if let Some(blocker) = automation.blocker().await {
         tracing::warn!(

@@ -19,6 +19,7 @@ use tokio::sync::{Mutex, Notify, RwLock};
 use crate::{
     config::{AutomationConfig, AutomationPolicy},
     error::{StudioError, StudioResult},
+    operation::OperationService,
     update::RuntimeOperationCoordinator,
 };
 
@@ -512,6 +513,7 @@ pub struct AutomationController {
     blocker: Arc<RwLock<Option<AutomationBlocker>>>,
     schedule: ScheduleEngine,
     runtime_operations: Arc<RuntimeOperationCoordinator>,
+    operations: OperationService,
     persistence_available: Arc<RwLock<bool>>,
     evaluation: Arc<Mutex<()>>,
     run_active: Arc<AtomicBool>,
@@ -523,12 +525,14 @@ impl AutomationController {
         runtime_root: PathBuf,
         policy_fingerprint: Option<String>,
         runtime_operations: Arc<RuntimeOperationCoordinator>,
+        operations: OperationService,
     ) -> Self {
         Self::with_clock(
             config,
             runtime_root,
             policy_fingerprint,
             runtime_operations,
+            operations,
             Arc::new(SystemClock),
         )
     }
@@ -538,6 +542,7 @@ impl AutomationController {
         runtime_root: PathBuf,
         policy_fingerprint: Option<String>,
         runtime_operations: Arc<RuntimeOperationCoordinator>,
+        operations: OperationService,
         clock: Arc<dyn AutomationClock>,
     ) -> Self {
         let store = AutomationStateStore::new(runtime_root);
@@ -578,6 +583,7 @@ impl AutomationController {
             blocker: Arc::new(RwLock::new(blocker)),
             schedule,
             runtime_operations,
+            operations,
             persistence_available: Arc::new(RwLock::new(persistence_available)),
             evaluation: Arc::new(Mutex::new(())),
             run_active: Arc::new(AtomicBool::new(false)),
@@ -594,6 +600,10 @@ impl AutomationController {
 
     pub fn config(&self) -> &AutomationConfig {
         &self.config
+    }
+
+    pub fn operation_service(&self) -> &OperationService {
+        &self.operations
     }
 
     pub async fn run(self: Arc<Self>, shutdown: Arc<Notify>) {
@@ -713,6 +723,8 @@ mod tests {
     use super::*;
     use crate::{
         config::{AutomationConfig, AutomationPolicy},
+        operation::OperationService,
+        storage::{ActorKind, HistoryAction, HistoryHandle, OperationOutcome, SubjectKind},
         update::RuntimeOperationCoordinator,
     };
 
@@ -733,6 +745,10 @@ mod tests {
         fn now_ms(&self) -> u64 {
             self.0.load(Ordering::SeqCst)
         }
+    }
+
+    fn test_operation_service(runtime_root: &Path) -> OperationService {
+        OperationService::new(HistoryHandle::initialize(runtime_root))
     }
 
     #[test]
@@ -885,6 +901,7 @@ mod tests {
             root.path().to_owned(),
             Some("policy".into()),
             Arc::new(RuntimeOperationCoordinator::default()),
+            test_operation_service(root.path()),
             clock,
         );
         assert_eq!(
@@ -907,6 +924,7 @@ mod tests {
             root.path().to_owned(),
             Some("policy".into()),
             Arc::new(RuntimeOperationCoordinator::default()),
+            test_operation_service(root.path()),
             clock.clone(),
         );
         assert_eq!(
@@ -934,6 +952,7 @@ mod tests {
             root.path().to_owned(),
             Some("policy".into()),
             coordinator,
+            test_operation_service(root.path()),
             clock,
         ));
 
@@ -981,6 +1000,7 @@ mod tests {
             root.path().to_owned(),
             Some("policy".into()),
             Arc::new(RuntimeOperationCoordinator::default()),
+            test_operation_service(root.path()),
             clock,
         );
         let first = controller.tick().await.unwrap();
@@ -994,6 +1014,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn controller_and_api_share_the_same_audit_service_contract() {
+        let root = tempfile::tempdir().unwrap();
+        let history = HistoryHandle::initialize(root.path());
+        let run_id = uuid::Uuid::new_v4();
+        history
+            .start_run(run_id, "automation-audit-test", None)
+            .unwrap();
+        history.mark_run_ready().unwrap();
+        let operations = OperationService::new(history.clone());
+
+        let controller = AutomationController::new(
+            AutomationConfig::default(),
+            root.path().to_owned(),
+            Some("policy".into()),
+            Arc::new(RuntimeOperationCoordinator::default()),
+            operations.clone(),
+        );
+        let context = controller
+            .operation_service()
+            .admit(
+                SubjectKind::System,
+                HistoryAction::UpdateCheck,
+                ActorKind::LocalOperator,
+            )
+            .await
+            .unwrap();
+        let operation_id = context.operation_id();
+        let receipt = controller
+            .operation_service()
+            .finish(&context, OperationOutcome::Succeeded, None)
+            .await
+            .unwrap();
+        assert_eq!(receipt.operation_id, operation_id);
+        history.shutdown();
+    }
+
+    #[tokio::test]
     async fn controller_shutdown_is_prompt_and_never_runs_mutation() {
         let root = tempfile::tempdir().unwrap();
         let controller = Arc::new(AutomationController::new(
@@ -1001,6 +1058,7 @@ mod tests {
             root.path().to_owned(),
             Some("policy".into()),
             Arc::new(RuntimeOperationCoordinator::default()),
+            test_operation_service(root.path()),
         ));
         let shutdown = Arc::new(Notify::new());
         let task = tokio::spawn(controller.run(shutdown.clone()));
