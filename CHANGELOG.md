@@ -6,6 +6,17 @@ The project follows Semantic Versioning once public/pre-release artifacts begin.
 
 ## [Unreleased]
 
+### Added
+
+- M8.1 automation foundation with backward-compatible manual/disabled policy defaults, bounded UTC scheduling, persistent circuit/deferral state, policy/config fingerprinting, and a single cancellable AutomationController.
+- Private schema-v1 automation state under `runtime/studio/data/automation/state.json` with 256 KiB bounds, symlink/root confinement, atomic fsync replacement, and fail-closed corrupt/future-schema handling.
+- Shared `OperationService` audit admission/terminal boundary used by existing API mutations and injected into AutomationController.
+- Runtime-operation read-only ownership snapshots and bounded coordinator-busy deferral/backoff without introducing a durable job/replay queue.
+
+### Verified
+
+- M8.1 exact-source qualification at `2718ab2` passes 308 Studio tests plus full M5/M6/M7 cross-repository/runtime-only regression gates.
+
 ## [0.7.1] - 2026-09-22
 
 ### Added

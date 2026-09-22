@@ -32,20 +32,20 @@
 
 ## M8.1 — Automation foundation and durable policy state
 
-- [ ] Extend config with backwards-compatible `[automation]`.
-- [ ] Default every automatic mode to manual/disabled.
-- [ ] Implement validated UTC maintenance window type.
-- [ ] Implement AutomationStateStore with schema v1, size cap, confinement, atomic fsync replacement.
-- [ ] Fail automatic mutation closed on corrupt/future state.
-- [ ] Implement ScheduleEngine with startup grace and skipped missed ticks.
-- [ ] Implement bounded retry/backoff/circuit state.
-- [ ] Detect persisted clock regression and block destructive automation.
-- [ ] Add RuntimeOperationCoordinator read-only snapshot.
-- [ ] Treat busy coordinator as defer/backoff, never busy loop.
-- [ ] Extract shared internal audit/admission service from API path.
-- [ ] Route manual API actions through the shared service unchanged.
-- [ ] Add AutomationController cancellation/shutdown contract.
-- [ ] Add unit/fake-time/restart tests.
+- [x] Extend config with backwards-compatible `[automation]`.
+- [x] Default every automatic mode to manual/disabled.
+- [x] Implement validated UTC maintenance window type.
+- [x] Implement AutomationStateStore with schema v1, size cap, confinement, atomic fsync replacement.
+- [x] Fail automatic mutation closed on corrupt/future state.
+- [x] Implement ScheduleEngine with startup grace and skipped missed ticks.
+- [x] Implement bounded retry/backoff/circuit state.
+- [x] Detect persisted clock regression and block destructive automation.
+- [x] Add RuntimeOperationCoordinator read-only snapshot.
+- [x] Treat busy coordinator as defer/backoff, never busy loop.
+- [x] Extract shared internal audit/admission service from API path.
+- [x] Route manual API actions through the shared service unchanged.
+- [x] Add AutomationController cancellation/shutdown contract.
+- [x] Add unit/fake-time/restart tests.
 
 **Exit:** a controller can safely schedule observations and persist policy state but cannot yet auto-activate runtime.
 
