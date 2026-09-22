@@ -12,6 +12,8 @@ M6 adds private SQLite-backed operational history, typed audit admission/outcome
 
 Automatic restart/backoff, remote authentication, and Gateway-observed MCP request/usage telemetry remain later milestones. M7 is the next implementation boundary.
 
+A proposed post-M7 Workspace Skill Runtime is documented in ADR 0036 and `docs/plans/workspace-skill-runtime/`. It does not change the current M7 implementation boundary: Gateway remains the external MCP request/safety boundary, typed MCPs remain concrete capability boundaries, and Studio would provide operator inventory/policy/evidence surfaces rather than becoming a general-purpose remote worker.
+
 ## Components
 
 - `api`: HTTP/WebSocket API, same-origin mutation protection, SPA/static-file boundary.

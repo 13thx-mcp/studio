@@ -1747,3 +1747,29 @@ Semantic Versioning is required for Studio and all `13thx-mcp` component release
 M5 publication qualification and M6 closure are complete. Before M7 implementation begins, post-M6 hardening changes must keep the existing M5/M6 authority and recovery contracts green under the normal clean-tree quality/security qualification.
 
 M7 must start from the closed M6 authority split: SQLite remains historical evidence only; live request authority stays in Gateway/runtime owners; unattended auto-update/reconciliation remains M8 scope until M7 drain, concurrency, cancellation and unknown-outcome semantics are verified.
+
+---
+
+# 17. Post-M7 Design Track — Workspace Skill Runtime
+
+**Status:** proposed architecture track; not implemented and not assigned a milestone number yet.
+
+The current M8 numbering remains **Hardening + Auto-Update + Recovery**. To avoid rewriting established release planning while M7 closes, Workspace Skill Runtime is tracked as a post-M7 cross-cutting design package until its scheduling dependency is explicitly accepted.
+
+Target outcome:
+
+- ChatGPT or another MCP client can discover and invoke reusable Workspace skills through the secure tunnel;
+- Gateway exposes a small generic `skill.search / skill.describe / skill.invoke / skill.status` surface;
+- skills compose existing typed MCP primitives and cannot grant themselves additional authority;
+- M7 request admission, concurrency, cancellation, drain and unknown-outcome semantics remain authoritative;
+- Studio provides operator-visible inventory, policy, compatibility, distribution and evidence/history views;
+- M6 SQLite remains historical evidence only and never resumes live skill execution.
+
+Planning package:
+
+- `docs/plans/workspace-skill-runtime/README.md`
+- `docs/plans/workspace-skill-runtime/SECURITY-MODEL.md`
+- `docs/plans/workspace-skill-runtime/IMPLEMENTATION-ROADMAP.md`
+- ADR 0036: `docs/adr/0036-workspace-skill-runtime-mcp-boundary.md`
+
+Implementation must not begin until ADR 0036 is accepted and the M7 closure/release baseline remains green.
