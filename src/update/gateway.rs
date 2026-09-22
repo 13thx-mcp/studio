@@ -1457,6 +1457,14 @@ impl GatewayUpdateManager {
             .await
     }
 
+    pub(crate) async fn prepared_staging_id(&self, transaction_id: &str) -> Option<String> {
+        self.transactions
+            .lock()
+            .await
+            .get(transaction_id)
+            .and_then(|record| record.staged_id.clone())
+    }
+
     pub(crate) async fn artifact_history_identity(
         &self,
         transaction_id: &str,

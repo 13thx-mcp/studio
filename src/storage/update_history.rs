@@ -265,6 +265,7 @@ mod tests {
             installed_version: Some(Version::parse("1.0.0").unwrap()),
             running_version: Some(Version::parse("1.0.0").unwrap()),
             desired_version: Some(Version::parse("1.0.0").unwrap()),
+            desired_pinned: false,
             latest_version: Some(Version::parse("1.1.0").unwrap()),
             update_available: true,
             installation_health: InventoryHealth::Healthy,

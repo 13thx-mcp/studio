@@ -1,5 +1,10 @@
+mod updates;
+pub use updates::{
+    PreparedAutomation, SourceHygiene, UpdateAutomationRun, UpdateAutomationService,
+};
+
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -147,6 +152,9 @@ pub struct PreparedReference {
     pub component: String,
     pub target_version: String,
     pub transaction_id: String,
+    pub staging_id: String,
+    #[serde(default)]
+    pub staged_fingerprint: Option<String>,
     pub prepared_at_ms: u64,
     pub process_instance: String,
     pub policy_fingerprint: String,
@@ -526,6 +534,8 @@ pub struct AutomationController {
     evaluation: Arc<Mutex<()>>,
     run_active: Arc<AtomicBool>,
     restart_owners: Option<RestartOwners>,
+    process_instance: String,
+    update_service: Option<UpdateAutomationService>,
 }
 
 impl AutomationController {
@@ -556,6 +566,7 @@ impl AutomationController {
     ) -> Self {
         let store = AutomationStateStore::new(runtime_root);
         let now_ms = clock.now_ms();
+        let process_instance = uuid::Uuid::new_v4().to_string();
         let schedule = ScheduleEngine::from_config(&config);
         let mut blocker = None;
         let mut persistence_available = true;
@@ -576,6 +587,9 @@ impl AutomationController {
             state.prepared.clear();
             state.policy_fingerprint = policy_fingerprint;
         }
+        state
+            .prepared
+            .retain(|_, prepared| prepared.process_instance == process_instance);
         schedule.reconcile(&mut state, now_ms);
         state.last_persisted_wall_ms = state.last_persisted_wall_ms.max(now_ms);
 
@@ -597,6 +611,8 @@ impl AutomationController {
             evaluation: Arc::new(Mutex::new(())),
             run_active: Arc::new(AtomicBool::new(false)),
             restart_owners: None,
+            process_instance,
+            update_service: None,
         }
     }
 
@@ -623,6 +639,79 @@ impl AutomationController {
     ) -> Self {
         self.restart_owners = Some(RestartOwners { supervisor, tunnel });
         self
+    }
+
+    pub fn process_instance(&self) -> &str {
+        &self.process_instance
+    }
+
+    pub fn with_update_service(mut self, service: UpdateAutomationService) -> Self {
+        self.update_service = Some(service);
+        self
+    }
+
+    pub async fn record_prepared(
+        &self,
+        component: impl Into<String>,
+        target_version: impl Into<String>,
+        transaction_id: impl Into<String>,
+        staging_id: impl Into<String>,
+        staged_fingerprint: Option<String>,
+    ) -> StudioResult<()> {
+        let component = component.into();
+        let mut state = self.state.lock().await;
+        let policy_fingerprint = state.policy_fingerprint.clone().ok_or_else(|| {
+            StudioError::Automation("loaded policy fingerprint is unavailable".into())
+        })?;
+        let reference = PreparedReference {
+            component: component.clone(),
+            target_version: target_version.into(),
+            transaction_id: transaction_id.into(),
+            staging_id: staging_id.into(),
+            staged_fingerprint,
+            prepared_at_ms: self.clock.now_ms(),
+            process_instance: self.process_instance.clone(),
+            policy_fingerprint,
+        };
+        state.prepared.insert(component, reference);
+        state.last_persisted_wall_ms = self.clock.now_ms().max(state.last_persisted_wall_ms);
+        self.store.persist(&state)
+    }
+
+    pub async fn clear_prepared(&self, component: &str) -> StudioResult<()> {
+        let mut state = self.state.lock().await;
+        state.prepared.remove(component);
+        state.last_persisted_wall_ms = self.clock.now_ms().max(state.last_persisted_wall_ms);
+        self.store.persist(&state)
+    }
+
+    async fn current_prepared_staging_ids(&self) -> BTreeSet<String> {
+        self.state
+            .lock()
+            .await
+            .prepared
+            .values()
+            .map(|prepared| prepared.staging_id.clone())
+            .collect()
+    }
+
+    async fn run_update_policy(&self) -> StudioResult<()> {
+        let Some(service) = &self.update_service else {
+            return Ok(());
+        };
+        let protected = self.current_prepared_staging_ids().await;
+        let run = service.run(&protected).await?;
+        for prepared in run.prepared {
+            self.record_prepared(
+                prepared.component.to_string(),
+                prepared.target.to_string(),
+                prepared.transaction_id,
+                prepared.staging_id,
+                Some(prepared.staged_fingerprint),
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     pub async fn run(self: Arc<Self>, shutdown: Arc<Notify>) {
@@ -717,16 +806,53 @@ impl AutomationController {
 
         // M8.1 intentionally performs no domain/network/runtime action.
         // It only advances bounded scheduler state; later packages attach typed handlers.
-        let mut state = self.state.lock().await;
-        let due = self.schedule.take_due(&mut state, now_ms);
+        let due = {
+            let mut state = self.state.lock().await;
+            let due = self.schedule.take_due(&mut state, now_ms);
+            state.last_persisted_wall_ms = now_ms.max(state.last_persisted_wall_ms);
+            self.store.persist(&state)?;
+            due
+        };
+
+        if due.contains(&ScheduleClass::UpdateCheck)
+            && let Err(error) = self.run_update_policy().await
+        {
+            let mut state = self.state.lock().await;
+            let circuit = state.circuits.entry("update_check".into()).or_default();
+            circuit.record_failure(
+                now_ms,
+                CircuitPolicy {
+                    failure_threshold: self.config.updates.max_consecutive_failures,
+                    cooldown_ms: self
+                        .config
+                        .updates
+                        .circuit_cooldown_seconds
+                        .saturating_mul(1000),
+                },
+            );
+            state.last_outcome = Some(AutomationOutcome {
+                kind: OutcomeKind::Failure,
+                code: OutcomeCode::DomainFailure,
+                observed_at_ms: now_ms,
+            });
+            self.store.persist(&state)?;
+            tracing::warn!(%error, "automatic update policy evaluation failed");
+        }
+
         if !due.is_empty() {
             let operation_snapshot = self.runtime_operations.snapshot()?;
-            let outcome = if operation_snapshot.is_idle() {
+            let mut state = self.state.lock().await;
+            if operation_snapshot.is_idle() {
                 state.deferrals.remove("runtime_operation");
-                AutomationOutcome {
-                    kind: OutcomeKind::Deferred,
-                    code: OutcomeCode::PolicyDisabled,
-                    observed_at_ms: now_ms,
+                if state.last_outcome.is_none()
+                    || !due.contains(&ScheduleClass::UpdateCheck)
+                    || self.update_service.is_none()
+                {
+                    state.last_outcome = Some(AutomationOutcome {
+                        kind: OutcomeKind::Deferred,
+                        code: OutcomeCode::PolicyDisabled,
+                        observed_at_ms: now_ms,
+                    });
                 }
             } else {
                 let retry = state
@@ -745,16 +871,15 @@ impl AutomationController {
                         schedule.next_due_ms = schedule.next_due_ms.max(retry);
                     }
                 }
-                AutomationOutcome {
+                state.last_outcome = Some(AutomationOutcome {
                     kind: OutcomeKind::Deferred,
                     code: OutcomeCode::CoordinatorBusy,
                     observed_at_ms: now_ms,
-                }
-            };
-            state.last_outcome = Some(outcome);
+                });
+            }
+            state.last_persisted_wall_ms = now_ms.max(state.last_persisted_wall_ms);
+            self.store.persist(&state)?;
         }
-        state.last_persisted_wall_ms = now_ms.max(state.last_persisted_wall_ms);
-        self.store.persist(&state)?;
         Ok(due)
     }
 }
@@ -937,6 +1062,42 @@ mod tests {
         assert!(state.ready(150));
         state.clear();
         assert_eq!(state, DeferralState::default());
+    }
+
+    #[tokio::test]
+    async fn prepared_authority_is_process_scoped_across_restart() {
+        let root = tempfile::tempdir().unwrap();
+        let clock = Arc::new(FakeClock::new(10_000));
+        let controller = AutomationController::with_clock(
+            AutomationConfig::default(),
+            root.path().to_owned(),
+            Some("policy".into()),
+            Arc::new(RuntimeOperationCoordinator::default()),
+            test_operation_service(root.path()),
+            clock.clone(),
+        );
+        controller
+            .record_prepared(
+                "git",
+                "0.2.0",
+                "tx-git",
+                "ready-git",
+                Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(controller.state().await.prepared.len(), 1);
+        drop(controller);
+
+        let restarted = AutomationController::with_clock(
+            AutomationConfig::default(),
+            root.path().to_owned(),
+            Some("policy".into()),
+            Arc::new(RuntimeOperationCoordinator::default()),
+            test_operation_service(&root.path().join("second-history")),
+            clock,
+        );
+        assert!(restarted.state().await.prepared.is_empty());
     }
 
     #[tokio::test]

@@ -7,6 +7,7 @@ use crate::error::{StudioError, StudioResult};
 pub enum ActorKind {
     LocalOperator,
     SystemStartup,
+    SystemAutomation,
     OwnerCompensation,
     ExternalFleet,
     SystemShutdown,
@@ -17,6 +18,7 @@ impl ActorKind {
         match self {
             Self::LocalOperator => "local_operator",
             Self::SystemStartup => "system_startup",
+            Self::SystemAutomation => "system_automation",
             Self::OwnerCompensation => "owner_compensation",
             Self::ExternalFleet => "external_fleet",
             Self::SystemShutdown => "system_shutdown",

@@ -8,7 +8,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use mcp_studio::{
     api::{self, AppState},
-    automation::AutomationController,
+    automation::{AutomationController, UpdateAutomationService},
     config::{LoadedConfigIdentity, StudioConfig},
     discovery::DiscoveryService,
     health::HealthService,
@@ -221,6 +221,25 @@ async fn main() -> Result<()> {
         "runtime reconciliation startup check completed"
     );
 
+    let update_automation = UpdateAutomationService::new(
+        config.automation.updates.clone(),
+        activation_runtime_root.clone(),
+        inventory.clone(),
+        updates.clone(),
+        gateway_updates.clone(),
+        fleet_updates.clone(),
+        self_updates.clone(),
+        tunnel_updates.clone(),
+        operations.clone(),
+        history.clone(),
+        registry_events.clone(),
+        runtime_operations.clone(),
+    );
+    if config.automation.updates.policy == mcp_studio::config::AutomationPolicy::AutoUpdateSafe {
+        tracing::warn!(
+            "auto-update-safe is prepare-only until the M8.4 activation SafetyGate is qualified"
+        );
+    }
     let automation = Arc::new(
         AutomationController::new(
             config.automation.clone(),
@@ -229,7 +248,8 @@ async fn main() -> Result<()> {
             runtime_operations.clone(),
             operations.clone(),
         )
-        .with_restart_owners(supervisor.clone(), tunnel.clone()),
+        .with_restart_owners(supervisor.clone(), tunnel.clone())
+        .with_update_service(update_automation),
     );
     if let Some(blocker) = automation.blocker().await {
         tracing::warn!(
