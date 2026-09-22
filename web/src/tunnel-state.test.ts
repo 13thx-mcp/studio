@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { actionEnabled, mergeLogEntries } from "./state";
+import { mergeLogEntries, tunnelActionEnabled } from "./state";
 import type { StudioEvent, TunnelLogEntry, TunnelStatus } from "./types";
 
 const stoppedTunnel: TunnelStatus = {
@@ -26,9 +26,9 @@ function tunnelLog(sequence: number, message: string): TunnelLogEntry {
 
 describe("tunnel lifecycle state", () => {
   it("enables and disables lifecycle actions by state", () => {
-    expect(actionEnabled(stoppedTunnel, "start")).toBe(true);
-    expect(actionEnabled(stoppedTunnel, "stop")).toBe(false);
-    expect(actionEnabled(stoppedTunnel, "restart")).toBe(true);
+    expect(tunnelActionEnabled(stoppedTunnel, "start")).toBe(true);
+    expect(tunnelActionEnabled(stoppedTunnel, "stop")).toBe(false);
+    expect(tunnelActionEnabled(stoppedTunnel, "restart")).toBe(true);
 
     const running: TunnelStatus = {
       ...stoppedTunnel,
@@ -36,9 +36,22 @@ describe("tunnel lifecycle state", () => {
       pid: 1234,
       uptime_ms: 5000,
     };
-    expect(actionEnabled(running, "start")).toBe(false);
-    expect(actionEnabled(running, "stop")).toBe(true);
-    expect(actionEnabled(running, "restart")).toBe(true);
+    expect(tunnelActionEnabled(running, "start")).toBe(false);
+    expect(tunnelActionEnabled(running, "stop")).toBe(true);
+    expect(tunnelActionEnabled(running, "restart")).toBe(true);
+  });
+
+  it("keeps stop available when an active tunnel runtime disappears", () => {
+    const running: TunnelStatus = {
+      ...stoppedTunnel,
+      state: "running",
+      runtime_available: false,
+      pid: 1234,
+    };
+
+    expect(tunnelActionEnabled(running, "start")).toBe(false);
+    expect(tunnelActionEnabled(running, "restart")).toBe(false);
+    expect(tunnelActionEnabled(running, "stop")).toBe(true);
   });
 
   it("reconciles tunnel logs by sequence", () => {

@@ -384,36 +384,49 @@ impl FleetValidator for ProcessFleetValidator {
                 detail: "Fleet validation script is unavailable".into(),
             });
         }
-        for subcommand in ["render-gateway", "render-studio", "render-tunnel"] {
-            let mut command = Command::new("python3");
-            command
-                .arg(&script)
-                .arg(subcommand)
-                .arg("--host")
-                .arg(host_id)
-                .arg("--check")
-                .current_dir(bundle)
-                .env_clear()
-                .env("PATH", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin")
-                .env("PYTHONDONTWRITEBYTECODE", "1")
-                .kill_on_drop(true);
-            let output = timeout(VALIDATION_TIMEOUT, command.output())
-                .await
-                .map_err(|_| StudioError::UpdateVerificationFailed {
-                    component: ComponentId::Fleet.to_string(),
-                    detail: format!("Fleet {subcommand} validation timed out"),
-                })?
-                .map_err(|error| StudioError::UpdateVerificationFailed {
-                    component: ComponentId::Fleet.to_string(),
-                    detail: format!("Fleet {subcommand} validation failed to start: {error}"),
-                })?;
-            if !output.status.success() {
-                return Err(StudioError::UpdateVerificationFailed {
-                    component: ComponentId::Fleet.to_string(),
-                    detail: format!("Fleet {subcommand} validation reported drift"),
-                });
-            }
+        let mut command = Command::new("python3");
+        command
+            .arg(&script)
+            .arg("render-plan")
+            .arg("--host")
+            .arg(host_id)
+            .arg("--json")
+            .current_dir(bundle)
+            .env_clear()
+            .env("PATH", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin")
+            .env("PYTHONDONTWRITEBYTECODE", "1")
+            .kill_on_drop(true);
+        let output = timeout(VALIDATION_TIMEOUT, command.output())
+            .await
+            .map_err(|_| StudioError::UpdateVerificationFailed {
+                component: ComponentId::Fleet.to_string(),
+                detail: "Fleet generated-config validation timed out".into(),
+            })?
+            .map_err(|error| StudioError::UpdateVerificationFailed {
+                component: ComponentId::Fleet.to_string(),
+                detail: format!("Fleet generated-config validation failed to start: {error}"),
+            })?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let detail = stderr.trim().chars().take(512).collect::<String>();
+            return Err(StudioError::UpdateVerificationFailed {
+                component: ComponentId::Fleet.to_string(),
+                detail: if detail.is_empty() {
+                    format!(
+                        "Fleet generated-config validation exited with {}",
+                        output.status
+                    )
+                } else {
+                    format!("Fleet generated-config validation failed: {detail}")
+                },
+            });
         }
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).map_err(|error| {
+            StudioError::UpdateVerificationFailed {
+                component: ComponentId::Fleet.to_string(),
+                detail: format!("Fleet generated-config validation returned invalid JSON: {error}"),
+            }
+        })?;
         Ok(())
     }
 }
@@ -1678,12 +1691,38 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "explicit Aira Fleet render validation smoke; reads active generated configs only"]
+    async fn fleet_validation_uses_pure_render_plan() {
+        let temp = TempDir::new().unwrap();
+        let candidate = temp.path().join("fleet");
+        fs::create_dir_all(candidate.join("scripts")).unwrap();
+        fs::write(
+            candidate.join("scripts/fleetctl.py"),
+            r#"import json
+import sys
+
+expected = ["render-plan", "--host", "test-host", "--json"]
+if sys.argv[1:] != expected:
+    print(f"unexpected arguments: {sys.argv[1:]}", file=sys.stderr)
+    raise SystemExit(2)
+print(json.dumps({"outputs": []}))
+"#,
+        )
+        .unwrap();
+
+        ProcessFleetValidator
+            .validate(&candidate, "test-host")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "explicit Aira Fleet render validation smoke; requires adjacent Fleet checkout"]
     async fn live_aira_fleet_render_validation_smoke() {
         let temp = TempDir::new().unwrap();
         let candidate = temp.path().join("fleet");
         fs::create_dir_all(candidate.join("scripts")).unwrap();
         fs::create_dir_all(candidate.join("hosts")).unwrap();
+        fs::create_dir_all(candidate.join("launchers")).unwrap();
         for relative in [
             "VERSION",
             "fleet.toml",
@@ -1698,6 +1737,11 @@ mod tests {
         fs::copy(
             "../runtime/fleet/hosts/aira.toml",
             candidate.join("hosts/aira.toml"),
+        )
+        .unwrap();
+        fs::copy(
+            "../fleet/launchers/sonarqube-mcp",
+            candidate.join("launchers/sonarqube-mcp"),
         )
         .unwrap();
         ProcessFleetValidator

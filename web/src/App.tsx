@@ -24,7 +24,13 @@ import {
   updateRegistry,
 } from "./api";
 import { connectRealtime, type ConnectionState } from "./realtime";
-import { actionEnabled, formatLogMessage, formatUptime, mergeLogEntries } from "./state";
+import {
+  actionEnabled,
+  formatLogMessage,
+  formatUptime,
+  mergeLogEntries,
+  tunnelActionEnabled,
+} from "./state";
 import UpdatesPanel from "./UpdatesPanel";
 import HistoryPanel from "./HistoryPanel";
 import { persistPendingTransaction, readPendingTransactions } from "./updates-state";
@@ -467,8 +473,8 @@ export default function App() {
           <dl className="metric-grid">
             <div><dt>Runtime</dt><dd>{tunnel.runtime_available ? "available" : "unavailable"}</dd></div><div><dt>PID</dt><dd>{tunnel.pid ?? "—"}</dd></div><div><dt>Uptime</dt><dd>{formatUptime(displayedTunnelUptime)}</dd></div><div><dt>Restarts</dt><dd>{tunnel.restart_count}</dd></div><div><dt>Crashes</dt><dd>{tunnel.crash_count}</dd></div><div><dt>Last exit</dt><dd>{tunnel.last_exit_code ?? "—"}</dd></div><div><dt>Last error</dt><dd>{tunnel.last_error ?? "—"}</dd></div>
           </dl>
-          <div className="actions">{(["start", "restart", "stop"] as const).map((action) => <button key={action} disabled={!actionEnabled(tunnel, action) || pending !== null || !tunnel.runtime_available} onClick={() => void runTunnelAction(action)}>{pending === `tunnel:${action}` ? `${action}…` : action}</button>)}</div>
-          <section className="logs"><div className="logs-header"><div><h3>Tunnel logs</h3><span>{tunnelLogs.length} recent</span></div></div><div className="log-viewer" ref={tunnelLogViewerRef}>{tunnelLogs.length === 0 && <p className="log-empty">No tunnel logs yet.</p>}{tunnelLogs.map((entry) => <div className={`log-line log-${entry.stream}`} key={entry.sequence}><time>{new Date(entry.timestamp_ms).toLocaleTimeString()}</time><span className="log-stream">{entry.stream}</span><code>{formatLogMessage(entry.message)}</code></div>)}</div></section>
+          <div className="actions">{(["start", "restart", "stop"] as const).map((action) => <button key={action} disabled={!tunnelActionEnabled(tunnel, action) || pending !== null} onClick={() => void runTunnelAction(action)}>{pending === `tunnel:${action}` ? `${action}…` : action}</button>)}</div>
+          <section className="logs"><div className="logs-header"><div><h3>Tunnel logs</h3><span>{tunnelLogs.length} recent</span></div></div><div className="log-viewer" ref={tunnelLogViewerRef}>{tunnelLogs.length === 0 && <p className="log-empty">No tunnel logs yet.</p>}{tunnelLogs.map((entry) => <div className={`log-line log-${entry.stream}`} key={entry.sequence}><time>{new Date(entry.timestamp_ms).toLocaleTimeString()}</time><span className="log-stream" title="Process stream, not severity">{entry.stream}</span><code>{formatLogMessage(entry.message)}</code></div>)}</div></section>
         </>}
       </section>
 
