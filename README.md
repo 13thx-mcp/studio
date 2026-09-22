@@ -4,7 +4,7 @@ Local-first web control plane for safely discovering, registering, configuring, 
 
 ## Current status
 
-Milestone 6 — Persistence, Metrics & Auditability is **VERIFIED / CLOSED** as `v0.6.0-alpha`. Its full native darwin-arm64 qualification consumed independently qualified M5 publication evidence. The `v0.6.0-alpha` tag exists locally; pushing that tag or publishing a release remains a separate release action.
+Milestone 7 — Gateway Coordination, Concurrency & Tool Safety is **VERIFIED / CLOSED** on the current M7 reconciliation baseline. The closure patch version is `0.7.1`: the previously published `v0.7.0-beta` and `v0.7.0` tags are immutable historical releases and are not rewritten. Publication/deployment of the M7 closure patch remains a separate operator action.
 
 Current capabilities include:
 
@@ -28,10 +28,14 @@ Current capabilities include:
 - React/TypeScript dashboard with MCP, tunnel, Registry, and Discovery sections;
 - trusted release inventory, staged updates, rollback, Fleet reconciliation, and Studio/Tunnel update transactions;
 - SQLite-backed operational history, typed audit evidence, metrics aggregation, retention, and historical API/UI;
+- bounded Gateway admission, queueing, drain, cancellation/outcome handling, per-child recovery, payload guards, profiles, resources/progress, and sanitized historical telemetry;
+- revision-aware Filesystem reads/search/patch with optimistic CAS;
+- MCP cancellation propagation into the confined Exec child process;
+- Fleet pure `render-plan --json` reconciliation contract and runtime-only validation;
 - same-origin browser protection for privileged mutations and WebSocket upgrades;
 - loopback-only Studio bind.
 
-Automatic restart/backoff, remote authentication/RBAC, public Studio exposure, and Gateway-observed MCP request/usage telemetry remain later milestones. Historical persistence/metrics/auditability are part of the closed M6 baseline.
+Periodic unattended reconciliation, automatic update policy/recovery loops, remote authentication/RBAC, and public Studio exposure remain M8/M9 scope. M7 Gateway request coordination and sanitized Gateway telemetry are part of the closed baseline.
 
 ## Requirements
 

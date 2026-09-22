@@ -1,7 +1,7 @@
 # M7 Final Reconciliation & Pre-M8 Gate
 
-**Opened:** 2026-09-22  
-**State:** IMPLEMENTATION IN PROGRESS  
+**Opened:** 2026-09-22
+**State:** QUALIFIED / CLOSURE PATCH 0.7.1 PREPARED / FINAL MAIN EVIDENCE REQUIRED
 **Purpose:** reconcile post-qualification M7 changes, re-qualify the current authoritative source heads, repair release/document truth, and establish a clean M8 entry gate.
 
 ## Frozen starting baseline
@@ -108,3 +108,14 @@ python3 scripts/verify-m7-closure.py --profile full --require-clean
 ```
 
 and a PASS summary generated from a committed clean branch/tree.
+
+
+## Reconciliation outcome
+
+The first clean `full --require-clean` run on the new qualification infrastructure caught a stale runtime-only fixture because Fleet 0.4 requires an explicit valid `tunnel.tunnel_id`. Studio now preserves bounded Fleet render-plan stderr diagnostics, the fixture carries the current tunnel identity contract, and the same runtime-only smoke passes.
+
+A subsequent clean full run passed all component, targeted, runtime-only, and M5/M6 regression gates with no source change during execution.
+
+Remote refresh also corrected prior release-state assumptions: Studio `v0.7.0-beta` and `v0.7.0` are already present on origin. They are not rewritten. The closure release identity therefore advances to `0.7.1`.
+
+The final closure remains conditioned on repeating the same clean full runner on the exact final main/release head. Its generated `summary.json` is the authoritative exact-head evidence.

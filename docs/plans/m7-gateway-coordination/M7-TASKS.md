@@ -1,14 +1,17 @@
 # M7 Dependency-Ordered Execution Checklist
 
-**State:** M7.0 FROZEN / P-01..P-09 CLOSED / M7.1–M7.8 IMPLEMENTED / M7.9 QUALIFIED / CLOSURE FIXES INTEGRATED / LOCAL RELEASE TAGS RECONCILED / PUBLICATION PENDING.
+**State:** M7 VERIFIED / CURRENT-HEAD RECONCILIATION QUALIFIED / CLOSURE PATCH 0.7.1 / REMOTE PUBLICATION SEPARATE.
 
 **P-01..P-09 closure checkpoint:**
 
-- Studio planning/contracts: `653d2e6` (plus prior `7c93d1c`, `4f3f0d2`); implementation merge `1c5dac5`; runtime-only closure fix `543a6c4`; final closure merge on `main` `3423d8e`;
-- Gateway protocol/control-socket evidence: `6397661` + `60a0c00`; implementation merge `5b886c9`; bounded-soak qualification `da432d7`; final qualified `main` `36aea90`;
-- Filesystem M7.4 implementation: `ec68a04`, version 0.2.0;
-- Fleet M7 policy implementation: `7bad5e2`, version 0.3.0; unrelated Sonar work remains isolated on its feature branch;
-- local release tags are reconciled to the qualified release commits and verified unpublished; push, release publication and deployment are not implied by this checkpoint.
+- frozen planning/protocol lineage remains unchanged;
+- Studio current closure patch is version 0.7.1 and is requalified by `scripts/verify-m7-closure.py`;
+- Gateway current qualified line is `469ec92`, version 0.2.1;
+- Filesystem current qualified line is `df98dc3`, version 0.2.0;
+- Exec current qualified line is `50d5b4d`, version 0.1.0;
+- Git current qualified line is `31ceadd`, version 0.1.0;
+- Fleet current qualified line is `2ccdf54`, version 0.4.0;
+- remote refresh proves Studio `v0.7.0-beta` and `v0.7.0` are already published and immutable, so the final closure uses the new `0.7.1` patch identity rather than rewriting tags.
 
 ## M7.0 — Architecture, protocol and configuration freeze
 
@@ -182,8 +185,8 @@ M7.0 is frozen. Current implementation/qualification evidence is tracked in [M7-
 - [x] Runtime-only/source-less smoke — pre-fix merge exposed a real surface-count defect; Studio `543a6c4` fixes it and the explicit runtime-only smoke PASSes.
 - [x] M5/M6 regression suites.
 - [x] Clean-source provenance — detached exact-merge audit worktrees were clean; see M7-QUALIFICATION.
-- [x] Documentation/changelog/version updates — version targets are present; qualification notes local tags are pre-closure/unpublished pending reconciliation.
-- [x] Independent review before closure — Filesystem CAS/confinement/cleanup corrections plus this closure audit's runtime-only and soak findings are recorded; final release integration remains pending.
+- [x] Documentation/changelog/version updates — current component versions, M7 closed baseline, M8 next-step and remote tag truth are reconciled; Studio closure patch advances to 0.7.1.
+- [x] Independent review before closure — final reconciliation added exact-source qualification, caught and repaired stale Fleet tunnel identity in the runtime-only fixture, retained bounded render-plan stderr diagnostics, and re-ran soak/CAS/cancellation/tunnel/runtime-only/M5-M6 proofs.
 
 ## Branch/repository discipline
 

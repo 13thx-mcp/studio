@@ -2,109 +2,86 @@
 
 ## Scope
 
-This file began as planning-only evidence. M7 implementation has since been completed across Gateway, Filesystem, Fleet and Studio, so this revision records the current qualification boundary and points to the detailed closure audit.
+M7 planning is complete. This document now records the transition from the original implementation lineage to the final current-head reconciliation used as the M8 entry gate.
 
-See [M7-QUALIFICATION.md](M7-QUALIFICATION.md) for exact commits, gates, the runtime-only defect/fix, soak evidence, provenance and publication state.
+See:
+
+- [M7-QUALIFICATION.md](M7-QUALIFICATION.md) for current qualification and release-state evidence;
+- [FINAL-RECONCILIATION.md](FINAL-RECONCILIATION.md) for the pre-M8 closure program;
+- [M7-VERIFICATION-MATRIX.md](M7-VERIFICATION-MATRIX.md) for R01–R52.
 
 ## Frozen planning lineage
 
-P-01 through P-09 were dispositioned through the Studio planning commits:
+P-01 through P-09 were dispositioned through:
 
 - `4f3f0d2` — initial M7 source audit/planning package;
 - `7c93d1c` — drain/control-socket and scheduler contracts;
-- `653d2e6` — remaining P-02/P-03/P-05/P-07/P-08 contracts;
+- `653d2e6` — remaining contract freeze;
 - `57bff30` — P-gate closure checkpoint.
 
-Gateway protocol/control viability evidence originated in:
+Gateway protocol/control viability originated in `6397661` and `60a0c00`. ADR 0026–0035 remain the frozen M7 contract set.
 
-- `6397661` — rmcp protocol + control-socket permanent tests;
-- `60a0c00` — corrected LF-framed control-socket probe.
+## Historical implementation lineage
 
-ADR 0026–0035 now form the frozen M7 contract set.
+Historical M7 implementation evidence includes:
 
-## Qualified implementation lineage
+- Gateway implementation merge `5b886c9`, soak proof `da432d7`;
+- Filesystem M7.4 line including `ec68a04`;
+- Fleet M7 policy line including `7bad5e2`;
+- Studio implementation `1c5dac5`, runtime-only surface fix `543a6c4`, and subsequent integration.
 
-Current implementation baselines:
+Those commits remain useful lineage, but final closure does not equate historical qualification with current HEAD.
 
-- Gateway merge `5b886c95509b63d6d31c1ba903825b8a385027ff`, version 0.2.0;
-- Filesystem `ec68a043d9c67763c83d32e3a0b4f0a9f8e8c73f`, version 0.2.0;
-- Fleet merge `7bad5e2d4623e9867010572679dfc597a7dc4680`, version 0.3.0;
-- Studio merge `1c5dac50849134364c2fec6e70225b9027265812`, target 0.7.0-beta.
+## Current reconciliation baseline
 
-Closure audit additionally produced:
+Current component lines requalified for the pre-M8 gate are:
 
-- Studio `543a6c4` — derive managed reconciliation surfaces from the trusted active host, fixing schema-v1 runtime-only compatibility;
-- Gateway `da432d7` — permanent bounded scheduler soak proof.
-
-The two closure commits are qualification descendants of the implementation merges. They are now integrated on `main`: Studio `3423d8e` contains `543a6c4`, and Gateway `36aea90` contains `da432d7`.
+- Gateway `469ec9258855d39d9a3f57bae60ff4810ffeafb1`, version 0.2.1;
+- Filesystem `df98dc38c969c92f25c778d37691e7a3f1914367`, version 0.2.0;
+- Exec `50d5b4df9d3ddcbf0203f47321ce90efda15ca47`, version 0.1.0;
+- Git `31ceadd79751c3be7aed197697c88d74c594b812`, version 0.1.0;
+- Fleet `2ccdf54495e23c86da5bc8f6799b44d225c2e136`, version 0.4.0;
+- Studio closure patch version 0.7.1, with exact final HEAD captured by the final qualification summary.
 
 ## Current qualification results
 
-### Gateway
+The version-controlled `scripts/verify-m7-closure.py` runner proves in one foreground execution:
 
-Clean detached merge worktree:
+- pinned Rust 1.98.1 toolchain and required development tools;
+- clean-source provenance and no source identity change during the run;
+- all Rust component fmt/check/Clippy/test/build/audit gates;
+- Studio frontend lint/typecheck/test/build;
+- Fleet Python tests and pure render-plan contract;
+- Gateway bounded scheduler soak;
+- Filesystem external-change and concurrent CAS proofs;
+- Exec MCP cancellation;
+- tunnel runtime-loss Stop behavior;
+- source-less/runtime-only reconciliation;
+- M5/M6 regression profile.
 
-- fmt/check/Clippy — PASS;
-- full suite at merge — 51 tests PASS;
-- qualification branch with permanent soak — 52 tests PASS;
-- 4,000-admission scheduler soak returns active/queued state to zero after every round.
-
-### Filesystem
-
-- fmt/check/Clippy — PASS;
-- 10/10 tests PASS;
-- revision/CAS, external-edit conflict, patch/range/search bounds, symlink confinement and replacement-failure cleanup are covered.
-
-### Fleet
-
-Clean detached merge worktree:
-
-- 19/19 Python tests PASS;
-- host schema v2, Gateway policy rendering and dual tunnel asset selection are covered.
-
-### Studio
-
-Clean detached merge worktree:
-
-- fast quality profile 6/6 PASS;
-- Rust suites PASS;
-- web Vitest 31/31 PASS.
-
-The explicit runtime-only reconciliation smoke initially failed on merge `1c5dac5` because Studio required the schema-v2 `gateway.policy` surface for a supported schema-v1 host. Closure fix `543a6c4` makes the expected surface set derive from the trusted active host and the same explicit runtime-only smoke then PASSes.
+The first full reconciliation run caught a stale runtime-only fixture missing the current Fleet `tunnel.tunnel_id` requirement. Bounded stderr diagnostics exposed the exact failure. The fixture was corrected without weakening production validation, and the full run then passed.
 
 ## Workspace alias disposition
 
-Workspace aliases are not implemented or retained in M7. ADR 0034 explicitly retires that proposed surface. Former verification rows R34/R35 are retired by contract rather than presented as implementation PASS.
+Workspace aliases remain outside M7. ADR 0034 retires the proposed alias surface; R34/R35 remain retired by contract.
 
-## Tunnel evidence
+## Release-state correction
 
-The M7 tunnel architecture remains the ADR 0032 dual-artifact boundary:
+Remote refresh proved earlier documentation was stale:
 
-- runtime-cloudflared stays the Studio-owned daemon;
-- full `tunnel-client` is the bounded diagnostics/preflight companion;
-- both artifacts are same-release verified.
+- Studio `v0.7.0-beta` and `v0.7.0` are published on origin and immutable;
+- current post-release reconciliation must use a new patch identity, `0.7.1`;
+- other component tag publication is not uniform and is recorded repository-by-repository in M7-QUALIFICATION.
 
-Studio implementation includes exact dual-asset selection/staging, matching version/commit validation, bounded full-client `doctor`, and distinct liveness/readiness/MCP-discovery/control-plane-poll observations.
-
-## Provenance and publication
-
-Clean-source qualification used detached worktrees at the exact Gateway/Fleet/Studio merge commits; Filesystem main was clean.
-
-Remote-refresh publication guards prove these merge commits are not reachable from `origin` and the local release tags are also unpublished:
-
-- Studio `v0.7.0-beta`;
-- Gateway `v0.2.0`;
-- Filesystem `v0.2.0`;
-- Fleet `v0.3.0`.
-
-Local tagging remains distinct from publication/deployment. Main integration is complete and all four M7 release tags have been reconciled to their qualified release commits. Fresh remote publication guards confirm the qualified release commits and all four M7 tags remain unpublished. No push, public release or deployment is claimed here.
+No remote tag is rewritten for cosmetic consistency.
 
 ## Current disposition
 
-- M7.0 architecture freeze: complete.
-- P-01..P-09: closed.
-- M7.1–M7.8 implementation: qualified on the recorded commits.
-- M7.9 runtime-only and bounded-soak gaps discovered by closure audit: fixed/proved and integrated on main.
-- Final main integration: complete.
-- Local unpublished tag reconciliation: complete for Studio/Gateway/Filesystem/Fleet.
-- Publication/deployment: pending explicit release action.
+- architecture/protocol freeze: complete;
+- M7 implementation: complete;
+- current-head reconciliation: complete;
+- full clean-source pre-M8 qualification: required on the exact final main/release head and enforced by the runner;
+- M7 closure patch identity: 0.7.1;
+- next implementation milestone: M8 Hardening, Auto-Update Policy & Recovery;
+- Workspace Skill Runtime remains a separate design track;
+- remote publication/deployment remain explicit later actions.

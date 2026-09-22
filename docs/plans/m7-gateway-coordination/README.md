@@ -1,11 +1,10 @@
 # Mission 7 — Gateway Coordination, Concurrency & Tool Safety
 
-**State:** M7.0 FROZEN / M7.1–M7.8 IMPLEMENTED / M7.9 QUALIFIED / CLOSURE FIXES INTEGRATED / LOCAL RELEASE TAGS RECONCILED / PUBLICATION PENDING
-**Studio planning baseline:** `main` at `48906d892fb37275f8b2d10b73b7cad1eec355c9` (clean, `origin/main` aligned).  
-**Gateway audit baseline:** `main` at `02a46af100c0cee5e011b8bc74079d7a78dd3658` (clean).  
-**Filesystem audit baseline:** `main` at `0f09a665bb94af8388e01051d87cb3f865d4310d` (clean).  
-**Fleet observation:** current worktree is on `feature/sonarqube-main-gate`; do not mix M7 Fleet changes into that branch.  
-**Studio target:** `v0.7.0-beta`.
+**State:** M7 VERIFIED / CURRENT-HEAD RECONCILIATION QUALIFIED / CLOSURE PATCH 0.7.1
+**Qualification authority:** `scripts/verify-m7-closure.py` with exact before/after Git provenance.
+**Current component lines:** Gateway `469ec92` / 0.2.1; Filesystem `df98dc3` / 0.2.0; Exec `50d5b4d` / 0.1.0; Git `31ceadd` / 0.1.0; Fleet `2ccdf54` / 0.4.0.
+**Studio release truth:** remote `v0.7.0-beta` and `v0.7.0` are immutable published tags; final M7 reconciliation advances to `0.7.1`.
+**Publication/deployment:** separate explicit operator actions.
 
 ## Purpose
 
@@ -104,4 +103,4 @@ Read in this order:
 7. [M7-STUDIO-INTEGRATION.md](M7-STUDIO-INTEGRATION.md)
 8. [M7-QUALIFICATION.md](M7-QUALIFICATION.md)
 
-Do not start production M7 code until every M7.0 blocking prerequisite is either resolved or explicitly accepted with a testable alternative.
+M7 implementation and current-head reconciliation are complete. M8 may start only from a clean full qualification of the exact final main/release head; any future M7 surface expansion requires a new explicit contract and permanent verification.
