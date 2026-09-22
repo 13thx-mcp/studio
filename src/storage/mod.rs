@@ -63,10 +63,13 @@ use retention::{
 use update_history::{OperationKind, UpdateCheckObservation, UpdateTransactionObservation};
 
 const APPLICATION_ID: i64 = 0x4d43_5348;
-const SCHEMA_VERSION: i64 = 1;
-const SCHEMA_SHA256: &str = "1f24c81fcff6e7275bcdb939c14fc99abc4d946c817c4d617ef2d7593c8b3b70";
+const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_V1_SHA256: &str = "1f24c81fcff6e7275bcdb939c14fc99abc4d946c817c4d617ef2d7593c8b3b70";
 const SCHEMA_DOCUMENT: &str =
     include_str!("../../docs/plans/m6-persistence-metrics-auditability/SCHEMA.md");
+const MIGRATION_V2_SQL: &str = include_str!("migrations/0002_system_automation_actor.sql");
+const MIGRATION_V2_SHA256: &str =
+    "b765c968dad0d359bc60f1e8849247e6e961e63d429559a1c6b790c3da864c0c";
 const READ_WORKER_COUNT: usize = 2;
 const MIN_SQLITE_VERSION: &str = "3.51.3";
 const MAX_WRITER_CAPACITY: usize = 4096;
@@ -4337,7 +4340,7 @@ fn migrate(connection: &Connection) -> StudioResult<()> {
         ));
     }
 
-    let version: i64 = connection
+    let mut version: i64 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(history_error)?;
     if version > SCHEMA_VERSION {
@@ -4349,32 +4352,46 @@ fn migrate(connection: &Connection) -> StudioResult<()> {
         verify_migration(connection)?;
         return Ok(());
     }
-    if version != 0 {
+
+    if version == 0 {
+        let user_tables: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(history_error)?;
+        if application_id == 0 && user_tables != 0 {
+            return Err(StudioError::History(
+                "nonempty unowned database cannot be adopted as history".into(),
+            ));
+        }
+        apply_v1_migration(connection)?;
+        version = 1;
+    }
+
+    if version == 1 {
+        apply_v2_migration(connection)?;
+        version = 2;
+    }
+
+    if version != SCHEMA_VERSION {
         return Err(StudioError::History(
             "history migration chain is not contiguous".into(),
         ));
     }
 
-    let user_tables: i64 = connection
-        .query_row(
-            "SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(history_error)?;
-    if application_id == 0 && user_tables != 0 {
-        return Err(StudioError::History(
-            "nonempty unowned database cannot be adopted as history".into(),
-        ));
-    }
+    verify_migration(connection)
+}
 
-    let sql = migration_sql()?;
+fn apply_v1_migration(connection: &Connection) -> StudioResult<()> {
+    let sql = migration_v1_sql()?;
     let transaction = connection.unchecked_transaction().map_err(history_error)?;
     transaction.execute_batch(&sql).map_err(history_error)?;
     transaction
         .execute(
             "INSERT INTO schema_migrations(version, name, sha256, applied_at_ms) VALUES (?1, ?2, ?3, ?4)",
-            (SCHEMA_VERSION, "0001_history_v1", SCHEMA_SHA256, now_ms()?),
+            (1_i64, "0001_history_v1", SCHEMA_V1_SHA256, now_ms()?),
         )
         .map_err(history_error)?;
     transaction
@@ -4385,21 +4402,57 @@ fn migrate(connection: &Connection) -> StudioResult<()> {
         .map_err(history_error)?;
     transaction
         .execute_batch(&format!(
-            "PRAGMA application_id={APPLICATION_ID}; PRAGMA user_version={SCHEMA_VERSION};"
+            "PRAGMA application_id={APPLICATION_ID}; PRAGMA user_version=1;"
         ))
         .map_err(history_error)?;
-    transaction.commit().map_err(history_error)?;
-    verify_migration(connection)
+    transaction.commit().map_err(history_error)
 }
 
-fn migration_sql() -> StudioResult<String> {
+fn apply_v2_migration(connection: &Connection) -> StudioResult<()> {
+    let digest = format!("{:x}", Sha256::digest(MIGRATION_V2_SQL.as_bytes()));
+    if digest != MIGRATION_V2_SHA256 {
+        return Err(StudioError::History(
+            "M8 history migration checksum mismatch".into(),
+        ));
+    }
+
+    connection
+        .execute_batch("PRAGMA foreign_keys=OFF;")
+        .map_err(history_error)?;
+    let migration_result = (|| -> StudioResult<()> {
+        let transaction = connection.unchecked_transaction().map_err(history_error)?;
+        transaction
+            .execute_batch(MIGRATION_V2_SQL)
+            .map_err(history_error)?;
+        transaction
+            .execute(
+                "INSERT INTO schema_migrations(version, name, sha256, applied_at_ms) VALUES (2, '0002_system_automation_actor', ?1, ?2)",
+                (MIGRATION_V2_SHA256, now_ms()?),
+            )
+            .map_err(history_error)?;
+        transaction
+            .execute_batch("PRAGMA user_version=2;")
+            .map_err(history_error)?;
+        transaction.commit().map_err(history_error)?;
+        Ok(())
+    })();
+
+    let reenable_result = connection
+        .execute_batch("PRAGMA foreign_keys=ON;")
+        .map_err(history_error);
+    migration_result?;
+    reenable_result?;
+    verify_foreign_keys(connection)
+}
+
+fn migration_v1_sql() -> StudioResult<String> {
     let sql = SCHEMA_DOCUMENT
-        .split_once("```sql\n")
-        .and_then(|(_, rest)| rest.split_once("\n```"))
+        .split_once("\x60\x60\x60sql\n")
+        .and_then(|(_, rest)| rest.split_once("\n\x60\x60\x60"))
         .map(|(sql, _)| sql)
         .ok_or_else(|| StudioError::History("embedded schema fixture is malformed".into()))?;
     let digest = format!("{:x}", Sha256::digest(sql.as_bytes()));
-    if digest != SCHEMA_SHA256 {
+    if digest != SCHEMA_V1_SHA256 {
         return Err(StudioError::History(
             "embedded schema checksum mismatch".into(),
         ));
@@ -4419,20 +4472,37 @@ fn verify_migration(connection: &Connection) -> StudioResult<()> {
             "history schema identity mismatch".into(),
         ));
     }
-    let checksum: Option<String> = connection
+    for (version, name, expected) in [
+        (1_i64, "0001_history_v1", SCHEMA_V1_SHA256),
+        (2_i64, "0002_system_automation_actor", MIGRATION_V2_SHA256),
+    ] {
+        let checksum: Option<String> = connection
+            .query_row(
+                "SELECT sha256 FROM schema_migrations WHERE version=?1 AND name=?2",
+                (version, name),
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(history_error)?;
+        if checksum.as_deref() != Some(expected) {
+            return Err(StudioError::History(
+                "schema migration checksum mismatch".into(),
+            ));
+        }
+    }
+    let operations_sql: String = connection
         .query_row(
-            "SELECT sha256 FROM schema_migrations WHERE version=1 AND name='0001_history_v1'",
+            "SELECT sql FROM sqlite_schema WHERE type='table' AND name='operations'",
             [],
             |row| row.get(0),
         )
-        .optional()
         .map_err(history_error)?;
-    if checksum.as_deref() != Some(SCHEMA_SHA256) {
+    if !operations_sql.contains("'system_automation'") {
         return Err(StudioError::History(
-            "schema migration checksum mismatch".into(),
+            "M8 automation actor schema is missing".into(),
         ));
     }
-    Ok(())
+    verify_foreign_keys(connection)
 }
 
 fn now_ms() -> StudioResult<i64> {
@@ -5070,7 +5140,7 @@ mod tests {
             connection
                 .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            1
+            2
         );
         assert_eq!(
             connection
@@ -5083,7 +5153,7 @@ mod tests {
                 .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
-            1
+            2
         );
         drop(connection);
 
@@ -5202,7 +5272,7 @@ mod tests {
             connection
                 .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            1
+            2
         );
         connection
             .execute(
@@ -5221,6 +5291,83 @@ mod tests {
     }
 
     #[test]
+    fn m8_v1_to_v2_preserves_operation_foreign_keys_and_accepts_automation_actor() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        apply_v1_migration(&connection).unwrap();
+        assert_eq!(
+            connection
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+
+        connection
+            .execute(
+                "INSERT INTO subjects(subject_id,kind,incarnation_id,first_observed_ms)
+                 VALUES('subject','system','incarnation',1)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO operations(
+                    operation_id,subject_id,action_code,actor_kind,effect_status,audit_status
+                 ) VALUES(
+                    'operation','subject','update.check','local_operator','succeeded','complete'
+                 )",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO events(
+                    event_id,subject_id,operation_id,source_stream,source_ordinal,name,category,
+                    observed_at_ms,time_quality,evidence_kind,payload_version,payload_json,
+                    payload_sha256,retention_class
+                 ) VALUES(
+                    'event','subject','operation','fixture',1,'operation.terminal','outcome',
+                    1,'local','owner',1,'{}',
+                    '0000000000000000000000000000000000000000000000000000000000000000',
+                    'audit'
+                 )",
+                [],
+            )
+            .unwrap();
+
+        apply_v2_migration(&connection).unwrap();
+        verify_migration(&connection).unwrap();
+        assert_eq!(
+            connection
+                .query_row("PRAGMA foreign_keys", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT operation_id FROM events WHERE event_id='event'",
+                    [],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .unwrap()
+                .as_deref(),
+            Some("operation")
+        );
+        connection
+            .execute(
+                "INSERT INTO operations(
+                    operation_id,subject_id,action_code,actor_kind,effect_status,audit_status
+                 ) VALUES(
+                    'automation','subject','update.check','system_automation','succeeded','complete'
+                 )",
+                [],
+            )
+            .unwrap();
+        verify_foreign_keys(&connection).unwrap();
+    }
+
+    #[test]
     fn rejects_future_schema_and_tampered_migration() {
         let fixture = runtime_fixture();
         let runtime_root = create_runtime(fixture.path());
@@ -5229,7 +5376,9 @@ mod tests {
         history.shutdown();
 
         let connection = Connection::open(&database).unwrap();
-        connection.execute_batch("PRAGMA user_version=2").unwrap();
+        connection
+            .execute_batch(&format!("PRAGMA user_version={};", SCHEMA_VERSION + 1))
+            .unwrap();
         drop(connection);
         assert_eq!(
             HistoryHandle::initialize(&runtime_root).health(),
@@ -6522,7 +6671,9 @@ exit 0
         history.shutdown();
 
         let connection = Connection::open(&database).unwrap();
-        connection.execute_batch("PRAGMA user_version=2").unwrap();
+        connection
+            .execute_batch(&format!("PRAGMA user_version={};", SCHEMA_VERSION + 1))
+            .unwrap();
         drop(connection);
 
         let reopened = HistoryHandle::initialize(&runtime_root);
@@ -6537,7 +6688,7 @@ exit 0
             connection
                 .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
-            2
+            SCHEMA_VERSION + 1
         );
     }
 

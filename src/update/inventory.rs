@@ -41,6 +41,7 @@ pub struct InventoryEntry {
     pub installed_version: Option<Version>,
     pub running_version: Option<Version>,
     pub desired_version: Option<Version>,
+    pub desired_pinned: bool,
     pub latest_version: Option<Version>,
     pub installation_health: InstallationHealth,
     pub drift: DriftState,
@@ -80,6 +81,7 @@ pub struct InventoryView {
     pub installed_version: Option<Version>,
     pub running_version: Option<Version>,
     pub desired_version: Option<Version>,
+    pub desired_pinned: bool,
     pub latest_version: Option<Version>,
     pub update_available: bool,
     pub installation_health: InventoryHealth,
@@ -132,6 +134,7 @@ impl From<&InventoryEntry> for InventoryView {
             installed_version: entry.installed_version.clone(),
             running_version: entry.running_version.clone(),
             desired_version: entry.desired_version.clone(),
+            desired_pinned: entry.desired_pinned,
             latest_version: entry.latest_version.clone(),
             update_available,
             installation_health: entry.installation_health.into(),
@@ -472,6 +475,11 @@ impl InventoryService {
         self.desired.write().await.insert(id, version);
     }
 
+    pub(crate) fn source_path_for(&self, id: ComponentId) -> StudioResult<PathBuf> {
+        let policy = self.catalog.component(id)?;
+        Ok(self.source_path(policy))
+    }
+
     pub async fn check(&self) -> Vec<InventoryView> {
         let previous = self.checks.read().await.clone();
         let mut tasks = JoinSet::new();
@@ -537,13 +545,13 @@ impl InventoryService {
         let check = self.checks.read().await.get(&id).cloned();
         let latest_version = check.as_ref().and_then(|entry| entry.latest.clone());
         let last_check = check.map(|entry| entry.state).unwrap_or_default();
-        let desired_version = self
-            .desired
-            .read()
-            .await
+        let desired = self.desired.read().await;
+        let desired_pinned = desired.contains_key(&id);
+        let desired_version = desired
             .get(&id)
             .cloned()
             .or_else(|| installed_version.clone());
+        drop(desired);
         let drift_running_version = if policy.class == ComponentClass::ControlBundle {
             installed_version.clone()
         } else {
@@ -569,6 +577,7 @@ impl InventoryService {
             installed_version,
             running_version,
             desired_version,
+            desired_pinned,
             latest_version,
             installation_health,
             drift: dimensions.drift_state(),
@@ -1004,6 +1013,7 @@ mod tests {
             installed_version: Some(version("1.0.0")),
             running_version: None,
             desired_version: Some(version("1.0.0")),
+            desired_pinned: false,
             latest_version: None,
             installation_health: InstallationHealth::Healthy,
             drift: DriftState::Unknown,

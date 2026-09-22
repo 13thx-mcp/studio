@@ -498,6 +498,10 @@ impl SelfUpdateManager {
         Ok(record.view())
     }
 
+    pub(crate) fn prepared_staging_id(&self, transaction_id: &str) -> StudioResult<Option<String>> {
+        Ok(self.read_record(transaction_id)?.staged_id)
+    }
+
     pub(crate) fn artifact_history_identity(
         &self,
         transaction_id: &str,

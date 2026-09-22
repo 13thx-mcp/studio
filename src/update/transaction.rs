@@ -460,6 +460,19 @@ impl McpUpdateManager {
         }
     }
 
+    pub(crate) async fn prepared_staging_id(
+        &self,
+        component: ComponentId,
+        transaction_id: &str,
+    ) -> Option<String> {
+        self.transactions
+            .lock()
+            .await
+            .get(transaction_id)
+            .filter(|record| record.view.component == component)
+            .and_then(|record| record.staged_id.clone())
+    }
+
     pub(crate) async fn artifact_history_identity(
         &self,
         component: ComponentId,
