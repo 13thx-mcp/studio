@@ -11,6 +11,16 @@ The project follows Semantic Versioning once public/pre-release artifacts begin.
 - Tunnel child startup now rejects configured and removes inherited `MCP_COMMAND`, `MCP_SERVER_URL`, and `CONTROL_PLANE_POLL_CHANNELS` overrides after applying explicit tunnel environment, preserving validated config as the sole MCP target/poll-channel authority.
 - M5/M6 roadmap, architecture, threat-model, bootstrap, package-checklist, and release-state documentation now agree on M5 publication qualification and M6 VERIFIED/CLOSED disposition.
 
+## [0.7.0-beta] - 2026-09-22
+
+### Added
+
+- M7 Gateway coordination: bounded admission/drain/recovery, strict policy profiles, bounded artifacts/resources/progress, sanitized M6 telemetry, and dual-artifact tunnel runtime support.
+
+### Verified
+
+- Gateway, Filesystem, Studio, and Fleet M7 regression gates run locally; publication remains intentionally separate.
+
 ## [0.6.0-alpha] - 2026-09-21
 
 ### Added

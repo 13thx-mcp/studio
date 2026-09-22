@@ -2542,6 +2542,7 @@ mod tests {
             marker,
         );
         write_version_script(&root.join("cloudflared"), version, marker);
+        write_version_script(&root.join("tunnel-client"), version, marker);
         fs::write(
             root.join("cloudflared-manifest.json"),
             serde_json::to_vec(&json!({"version":"test"})).unwrap(),
@@ -2634,14 +2635,21 @@ mod tests {
         let archive = archive_dir.join(&asset_name);
         fs::write(&archive, b"verified-tunnel-archive").unwrap();
         let archive_sha = digest(&archive);
+        let companion_asset_name = format!("tunnel-client-v{version}-darwin-arm64.zip");
+        let companion_archive = archive_dir.join(&companion_asset_name);
+        fs::write(&companion_archive, b"verified-full-client-archive").unwrap();
+        let companion_archive_sha = digest(&companion_archive);
         fs::write(
             archive_dir.join("SHA256SUMS.txt"),
-            format!("{archive_sha}  {asset_name}\n"),
+            format!(
+                "{archive_sha}  {asset_name}\n{companion_archive_sha}  {companion_asset_name}\n"
+            ),
         )
         .unwrap();
 
         let runtime = package_root.join("tunnel-client-runtime-cloudflared");
         let cloudflared = package_root.join("cloudflared");
+        let full_client = package_root.join("tunnel-client");
         let staged = StagedArtifact {
             component: ComponentId::Tunnel,
             version: Version::parse(version).unwrap(),
@@ -2650,10 +2658,16 @@ mod tests {
             platform: platform(),
             asset_name,
             archive_sha256: archive_sha,
+            companion_asset_name: Some(companion_asset_name),
+            companion_archive_sha256: Some(companion_archive_sha),
             staging_path: root.clone(),
             package_root,
-            validated_executables: vec![runtime.clone(), cloudflared.clone()],
-            validated_executable_sha256: vec![digest(&runtime), digest(&cloudflared)],
+            validated_executables: vec![runtime.clone(), cloudflared.clone(), full_client.clone()],
+            validated_executable_sha256: vec![
+                digest(&runtime),
+                digest(&cloudflared),
+                digest(&full_client),
+            ],
             verified_at_unix_seconds: 1,
         };
         fs::write(

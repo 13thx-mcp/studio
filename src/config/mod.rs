@@ -289,6 +289,16 @@ impl StudioConfig {
                 "tunnel runtime, working_dir, and config_file must not be empty".into(),
             ));
         }
+        if self
+            .tunnel
+            .health_url_file
+            .as_ref()
+            .is_some_and(|path| path.as_os_str().is_empty())
+        {
+            return Err(StudioError::Config(
+                "tunnel.health_url_file must not be empty when configured".into(),
+            ));
+        }
         if self.updates.source_root.as_os_str().is_empty()
             || self.updates.bin_root.as_os_str().is_empty()
             || self.updates.runtime_root.as_os_str().is_empty()

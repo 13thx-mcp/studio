@@ -31,6 +31,7 @@ use crate::{
 
 mod config_history;
 mod events;
+mod gateway_history;
 mod lifecycle;
 mod operation;
 mod query;
@@ -38,18 +39,20 @@ mod retention;
 mod update_history;
 
 pub use events::{ActorKind, HistoryAction, OperationOutcome, SubjectKind};
+pub use gateway_history::{GatewayHistoryBatch, GatewayHistoryEvent};
 pub use lifecycle::{LifecycleEndKind, LifecycleOwnerKind, LifecycleSessionContext};
 pub use operation::{OperationAdmissionReceipt, OperationContext, OperationTerminalReceipt};
 pub use query::{
-    HistoricalConfigRevision, HistoricalDrift, HistoricalEvent, HistoricalLineage,
-    HistoricalMetrics, HistoricalOperation, HistoricalSession, HistoricalSubject, HistoricalUpdate,
-    HistoryCoverage, HistoryListRequest, HistoryPage, HistoryReadRequest, HistoryReadResponse,
-    HistorySnapshot, HistoryStatus, MetricsRequest,
+    GatewayLatencyRequest, GatewayLatencySummary, HistoricalConfigRevision, HistoricalDrift,
+    HistoricalEvent, HistoricalLineage, HistoricalMetrics, HistoricalOperation, HistoricalSession,
+    HistoricalSubject, HistoricalUpdate, HistoryCoverage, HistoryListRequest, HistoryPage,
+    HistoryReadRequest, HistoryReadResponse, HistorySnapshot, HistoryStatus, MetricsRequest,
 };
 pub use retention::HousekeepingReport;
 
 use config_history::{ConfigRevisionObservation, DriftObservation, RegistryEntryProjection};
 use events::OperationEventPayload;
+use gateway_history::record_gateway_events;
 use lifecycle::{LifecycleEventPayload, LifecycleTerminalFact};
 use operation::MAX_ACTIVE_OPERATIONS;
 use query::execute_query;
@@ -211,6 +214,11 @@ enum WriterCommand {
     },
     ObserveDrift {
         observation: DriftObservation,
+    },
+    ObserveGatewayEvents {
+        instance_id: String,
+        events: Vec<GatewayHistoryEvent>,
+        reply: mpsc::SyncSender<StudioResult<u64>>,
     },
     RecordValidatedJournal {
         domain: String,
@@ -665,6 +673,30 @@ impl HistoryHandle {
         {
             self.mark_degraded("history_drift_queue_full");
         }
+    }
+
+    /// Records only Gateway's fixed, sanitized observation DTO. This is a
+    /// best-effort historical sink; it is never on a live child-request path.
+    pub fn observe_gateway_events(
+        &self,
+        instance_id: String,
+        events: Vec<GatewayHistoryEvent>,
+    ) -> StudioResult<u64> {
+        if self.health() != HistoryHealth::Healthy {
+            return Err(StudioError::History("history unavailable".into()));
+        }
+        let sender = self.writer_sender()?;
+        let (reply, receipt) = mpsc::sync_channel(1);
+        sender
+            .try_send(WriterCommand::ObserveGatewayEvents {
+                instance_id,
+                events,
+                reply,
+            })
+            .map_err(|_| StudioError::History("history writer queue is full".into()))?;
+        receipt
+            .recv_timeout(self.inner.receipt_timeout)
+            .map_err(|_| StudioError::History("Gateway history receipt timed out".into()))?
     }
 
     pub fn current_run_id(&self) -> Option<uuid::Uuid> {
@@ -3768,6 +3800,17 @@ fn start_workers(
                                     tracing::warn!(history_error = %error, "could not persist drift observation");
                                 }
                             }
+                            Ok(WriterCommand::ObserveGatewayEvents {
+                                instance_id,
+                                events,
+                                reply,
+                            }) => {
+                                let _ = reply.send(record_gateway_events(
+                                    &mut writer.connection,
+                                    &instance_id,
+                                    &events,
+                                ));
+                            }
                             Ok(WriterCommand::RecordValidatedJournal {
                                 domain,
                                 transaction_id,
@@ -4569,6 +4612,29 @@ mod tests {
 
     fn runtime_fixture() -> tempfile::TempDir {
         tempfile::tempdir().unwrap()
+    }
+
+    #[test]
+    fn unavailable_history_rejects_gateway_observation_without_retry_side_effect() {
+        let fixture = runtime_fixture();
+        let blocked_root = fixture.path().join("not-a-directory");
+        fs::write(&blocked_root, b"blocked").unwrap();
+        let history = HistoryHandle::initialize(&blocked_root);
+        assert!(matches!(history.health(), HistoryHealth::Degraded { .. }));
+        let result = history.observe_gateway_events(
+            "gateway-1".into(),
+            vec![GatewayHistoryEvent {
+                sequence: 1,
+                observed_at_ms: 1,
+                observation: gateway_history::GatewayObservation::Catalog {
+                    catalog_generation: 1,
+                    profile_generation: 1,
+                    catalog_fingerprint: "a".repeat(64),
+                    profile_fingerprint: "b".repeat(64),
+                },
+            }],
+        );
+        assert!(result.is_err());
     }
 
     fn create_runtime(root: &Path) -> PathBuf {

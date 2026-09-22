@@ -1375,6 +1375,8 @@ mod tests {
             platform: platform(),
             asset_name,
             archive_sha256: archive_sha,
+            companion_asset_name: None,
+            companion_archive_sha256: None,
             staging_path: root.clone(),
             package_root,
             validated_executables: vec![script],

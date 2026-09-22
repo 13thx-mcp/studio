@@ -170,6 +170,22 @@ pub struct HistoricalMetrics {
     pub through_seq: String,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct GatewayLatencySummary {
+    pub sample_count: String,
+    pub sample_limit_reached: bool,
+    pub queue_p50_ms: Option<String>,
+    pub queue_p95_ms: Option<String>,
+    pub execution_p50_ms: Option<String>,
+    pub execution_p95_ms: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GatewayLatencyRequest {
+    pub from_ms: Option<i64>,
+    pub to_ms: Option<i64>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HistoryListRequest {
     pub cursor: Option<String>,
@@ -215,6 +231,7 @@ pub enum HistoryReadRequest {
         subject_id: String,
     },
     Metrics(MetricsRequest),
+    GatewayLatency(GatewayLatencyRequest),
 }
 
 #[derive(Debug, Clone)]
@@ -230,6 +247,7 @@ pub enum HistoryReadResponse {
     Drift(HistoryPage<HistoricalDrift>),
     Lineage(HistoricalLineage),
     Metrics(HistoricalMetrics),
+    GatewayLatency(GatewayLatencySummary),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -297,7 +315,68 @@ pub(crate) fn execute_query(
         HistoryReadRequest::Metrics(request) => Ok(HistoryReadResponse::Metrics(query_metrics(
             connection, request,
         )?)),
+        HistoryReadRequest::GatewayLatency(request) => Ok(HistoryReadResponse::GatewayLatency(
+            query_gateway_latency(connection, request)?,
+        )),
     }
+}
+
+fn query_gateway_latency(
+    connection: &Connection,
+    request: GatewayLatencyRequest,
+) -> StudioResult<GatewayLatencySummary> {
+    const SAMPLE_LIMIT: usize = 4096;
+    let from_ms = request.from_ms.unwrap_or(0).max(0);
+    let to_ms = request.to_ms.unwrap_or(i64::MAX);
+    if from_ms > to_ms {
+        return Err(StudioError::History(
+            "Gateway latency range is invalid".into(),
+        ));
+    }
+    let mut statement = connection
+        .prepare(
+            "SELECT json_extract(payload_json, '$.queue_ms'), json_extract(payload_json, '$.execution_ms')
+             FROM events
+             WHERE name='gateway.request.observed'
+               AND subject_id='gateway-observation'
+               AND observed_at_ms>=?1 AND observed_at_ms<=?2
+             ORDER BY seq DESC
+             LIMIT ?3",
+        )
+        .map_err(history_error)?;
+    let rows = statement
+        .query_map(
+            (from_ms, to_ms, i64::try_from(SAMPLE_LIMIT).unwrap()),
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .map_err(history_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(history_error)?;
+    let sample_limit_reached = rows.len() == SAMPLE_LIMIT;
+    let mut queues = rows.iter().map(|(queue, _)| *queue).collect::<Vec<_>>();
+    let mut executions = rows
+        .iter()
+        .map(|(_, execution)| *execution)
+        .collect::<Vec<_>>();
+    queues.sort_unstable();
+    executions.sort_unstable();
+    Ok(GatewayLatencySummary {
+        sample_count: rows.len().to_string(),
+        sample_limit_reached,
+        queue_p50_ms: percentile(&queues, 50).map(|value| value.to_string()),
+        queue_p95_ms: percentile(&queues, 95).map(|value| value.to_string()),
+        execution_p50_ms: percentile(&executions, 50).map(|value| value.to_string()),
+        execution_p95_ms: percentile(&executions, 95).map(|value| value.to_string()),
+    })
+}
+
+fn percentile(values: &[i64], percentile: usize) -> Option<i64> {
+    let rank = values
+        .len()
+        .checked_mul(percentile)?
+        .div_ceil(100)
+        .checked_sub(1)?;
+    values.get(rank).copied()
 }
 
 fn query_status(connection: &Connection) -> StudioResult<HistoryStatus> {
@@ -1160,4 +1239,17 @@ fn now_ms() -> StudioResult<i64> {
 
 fn history_error(error: rusqlite::Error) -> StudioError {
     StudioError::History(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::percentile;
+
+    #[test]
+    fn percentile_uses_nearest_rank_on_observed_values() {
+        let values = [1, 3, 5, 9, 12, 20, 21, 34, 55, 89];
+        assert_eq!(percentile(&values, 50), Some(12));
+        assert_eq!(percentile(&values, 95), Some(89));
+        assert_eq!(percentile(&[], 50), None);
+    }
 }

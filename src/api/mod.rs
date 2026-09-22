@@ -102,6 +102,8 @@ pub fn router(state: AppState) -> Router {
             post(register_discovery),
         )
         .route("/api/tunnel", get(get_tunnel))
+        .route("/api/tunnel/diagnostics", get(get_tunnel_diagnostics))
+        .route("/api/tunnel/health", get(get_tunnel_health))
         .route("/api/tunnel/start", post(start_tunnel))
         .route("/api/tunnel/stop", post(stop_tunnel))
         .route("/api/tunnel/restart", post(restart_tunnel))
@@ -473,6 +475,18 @@ async fn require_inactive(supervisor: &Supervisor, id: &str, action: &str) -> Re
 
 async fn get_tunnel(State(state): State<AppState>) -> Json<TunnelStatus> {
     Json(state.tunnel.status().await)
+}
+
+async fn get_tunnel_diagnostics(
+    State(state): State<AppState>,
+) -> Json<crate::tunnel::TunnelDiagnosticStatus> {
+    Json(state.tunnel.diagnostics().await)
+}
+
+async fn get_tunnel_health(
+    State(state): State<AppState>,
+) -> Json<crate::tunnel::TunnelHealthStatus> {
+    Json(state.tunnel.health().await)
 }
 
 async fn start_tunnel(
@@ -1046,6 +1060,7 @@ mod tests {
                 runtime: PathBuf::from("missing-runtime"),
                 working_dir: PathBuf::from("."),
                 config_file: PathBuf::from("missing-config"),
+                health_url_file: None,
                 env: BTreeMap::new(),
             },
             32,

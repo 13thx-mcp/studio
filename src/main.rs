@@ -17,10 +17,10 @@ use mcp_studio::{
     supervisor::Supervisor,
     tunnel::TunnelSupervisor,
     update::{
-        ComponentCatalog, ComponentId, FleetUpdateManager, GatewayUpdateManager, HostPlatform,
-        HostRuntimeRoots, InventoryService, McpUpdateManager, RuntimeReconciler, SelfUpdateManager,
-        StudioProcessConfigIdentity, TunnelUpdateManager, Version,
-        write_activation_ready_proof_from_env,
+        ComponentCatalog, ComponentId, FleetUpdateManager, GatewayControlClient,
+        GatewayUpdateManager, HostPlatform, HostRuntimeRoots, InventoryService, McpUpdateManager,
+        RuntimeReconciler, SelfUpdateManager, StudioProcessConfigIdentity, TunnelUpdateManager,
+        Version, write_activation_ready_proof_from_env,
     },
 };
 use tokio::sync::Notify;
@@ -134,6 +134,7 @@ async fn main() -> Result<()> {
         HostPlatform::detect()?.platform(),
         desired,
     )?);
+    let gateway_history_client = GatewayControlClient::from_catalog(&catalog);
 
     let registry_events = EventHub::default();
     let tunnel = Arc::new(TunnelSupervisor::new_with_history(
@@ -208,6 +209,10 @@ async fn main() -> Result<()> {
     if let Err(error) = history.mark_run_ready() {
         tracing::warn!(history_error = %error, "could not persist Studio ready observation");
     }
+    tokio::spawn(ingest_gateway_history(
+        history.clone(),
+        gateway_history_client,
+    ));
     tracing::info!(
         listen_addr = %addr,
         managed_mcp_count = supervisor.registry().ids().len(),
@@ -287,6 +292,46 @@ async fn main() -> Result<()> {
         })
         .await?;
     Ok(())
+}
+
+async fn ingest_gateway_history(history: HistoryHandle, control: GatewayControlClient) {
+    let mut instance_id = None::<String>;
+    let mut after_sequence = 0_u64;
+    loop {
+        match control.history_after(after_sequence).await {
+            Ok((next_instance_id, _batch)) if instance_id.as_deref() != Some(&next_instance_id) => {
+                instance_id = Some(next_instance_id);
+                after_sequence = 0;
+            }
+            Ok((next_instance_id, batch)) => {
+                if batch.events.is_empty() {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
+                let ingest_history = history.clone();
+                let events = batch.events;
+                let result = tokio::task::spawn_blocking(move || {
+                    ingest_history.observe_gateway_events(next_instance_id, events)
+                })
+                .await;
+                match result {
+                    Ok(Ok(sequence)) => after_sequence = sequence,
+                    Ok(Err(error)) => {
+                        tracing::warn!(history_error = %error, "Gateway history ingestion failed; live Gateway outcomes are unchanged");
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "Gateway history ingestion worker failed; live Gateway outcomes are unchanged");
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::debug!(gateway_history_error = %error, "Gateway history source unavailable");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        }
+    }
 }
 
 async fn shutdown_signal() {

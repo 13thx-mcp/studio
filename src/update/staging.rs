@@ -21,7 +21,9 @@ use crate::error::{StudioError, StudioResult};
 use super::{
     AvailableRelease, ComponentCatalog, ComponentClass, ComponentId, ComponentPolicy,
     InstallTarget, Platform, ReleaseAsset, ReleaseAssetKind, ReleaseProvider, ReleaseProviderId,
-    Version, github_http::trusted_redirect_target,
+    Version,
+    github_http::trusted_redirect_target,
+    openai::{TUNNEL_FULL_ASSET_PREFIX, TUNNEL_RUNTIME_BINARY_NAME},
 };
 
 const STAGING_DIR_NAME: &str = ".mcp-studio-staging";
@@ -43,6 +45,10 @@ pub struct StagedArtifact {
     pub platform: Platform,
     pub asset_name: String,
     pub archive_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub companion_asset_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub companion_archive_sha256: Option<String>,
     pub staging_path: PathBuf,
     pub package_root: PathBuf,
     pub validated_executables: Vec<PathBuf>,
@@ -163,6 +169,35 @@ impl ArtifactStager {
                 "staged asset identity mismatch".into(),
             ));
         }
+        let companion = match (
+            staged.component == ComponentId::Tunnel,
+            &staged.companion_asset_name,
+            &staged.companion_archive_sha256,
+        ) {
+            (true, Some(name), Some(sha)) => Some((name, sha)),
+            (true, _, _) => {
+                return Err(StudioError::StagingFailure(
+                    "tunnel full-client artifact identity is incomplete".into(),
+                ));
+            }
+            (false, None, None) => None,
+            (false, _, _) => {
+                return Err(StudioError::StagingFailure(
+                    "non-tunnel artifact has unexpected companion identity".into(),
+                ));
+            }
+        };
+        if let Some((name, _)) = companion {
+            let expected = format!(
+                "{TUNNEL_FULL_ASSET_PREFIX}-v{}-{}.zip",
+                staged.version, staged.platform
+            );
+            if name != &expected {
+                return Err(StudioError::StagingFailure(
+                    "staged full-client asset identity mismatch".into(),
+                ));
+            }
+        }
         let package_root = fs::canonicalize(&staged.package_root)?;
         if !package_root.starts_with(&canonical_root) {
             return Err(StudioError::StagingFailure(
@@ -231,6 +266,31 @@ impl ArtifactStager {
                 actual: actual_sha,
             });
         }
+        if let Some((name, expected_sha)) = companion {
+            let archive = root.join("archive").join(name);
+            let metadata = fs::symlink_metadata(&archive)?;
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(StudioError::StagingFailure(
+                    "verified full-client archive is missing".into(),
+                ));
+            }
+            let manifest_sha =
+                checksum_for_asset(staged.component, &fs::read(&manifest_path)?, name)?;
+            if manifest_sha != *expected_sha {
+                return Err(StudioError::StagingFailure(
+                    "full-client metadata digest no longer matches checksum manifest".into(),
+                ));
+            }
+            let actual_sha = sha256_file(&archive)?;
+            if actual_sha != manifest_sha {
+                return Err(StudioError::ChecksumMismatch {
+                    component: staged.component.to_string(),
+                    asset: name.clone(),
+                    expected: manifest_sha,
+                    actual: actual_sha,
+                });
+            }
+        }
         Ok(staged)
     }
 
@@ -283,7 +343,7 @@ impl ArtifactStager {
             }
             ReleaseAssetKind::PlatformZip => extract_zip(policy.id, &archive_path, &extract_dir)?,
         };
-        let validated = validate_package(
+        let mut validated = validate_package(
             policy,
             release,
             selected,
@@ -295,10 +355,46 @@ impl ArtifactStager {
             normalize_executable_permission(executable)?;
         }
 
+        let mut companion_identity = None;
         if policy.id == ComponentId::Tunnel {
-            self.version_validator
-                .validate(&validated.executables[0], &release.version)
+            let companion = provider
+                .select_companion_asset(release, platform)?
+                .ok_or_else(|| {
+                    StudioError::StagingFailure("tunnel full-client asset is required".into())
+                })?;
+            validate_download_url(policy, &companion.download_url)?;
+            let companion_expected_sha = checksum_for_asset(policy.id, &manifest, &companion.name)?;
+            let companion_archive = archive_dir.join(&companion.name);
+            let companion_downloaded = self
+                .fetcher
+                .download(
+                    &companion.download_url,
+                    &companion_archive,
+                    MAX_ARTIFACT_BYTES,
+                )
                 .await?;
+            if companion_downloaded.sha256 != companion_expected_sha {
+                return Err(StudioError::ChecksumMismatch {
+                    component: policy.id.to_string(),
+                    asset: companion.name.clone(),
+                    expected: companion_expected_sha,
+                    actual: companion_downloaded.sha256,
+                });
+            }
+            let companion_extract = temp_path.join("full-client-extracted");
+            fs::create_dir_all(&companion_extract)?;
+            let extracted = extract_zip(policy.id, &companion_archive, &companion_extract)?;
+            let full_client =
+                validate_tunnel_client_package(policy, companion, &companion_extract, &extracted)?;
+            normalize_executable_permission(&full_client)?;
+            self.version_validator
+                .validate_pair(&validated.executables[0], &full_client, &release.version)
+                .await?;
+            let installed_full_client = validated.package_root.join(TUNNEL_FULL_ASSET_PREFIX);
+            fs::copy(&full_client, &installed_full_client)?;
+            normalize_executable_permission(&installed_full_client)?;
+            validated.executables.push(installed_full_client);
+            companion_identity = Some((companion.name.clone(), companion_downloaded.sha256));
         }
 
         let executable_sha256 = validated
@@ -341,6 +437,8 @@ impl ArtifactStager {
             platform,
             asset_name: selected.name.clone(),
             archive_sha256: downloaded.sha256,
+            companion_asset_name: companion_identity.as_ref().map(|(name, _)| name.clone()),
+            companion_archive_sha256: companion_identity.map(|(_, sha)| sha),
             staging_path: final_path.clone(),
             package_root: final_path.join(relative_package_root),
             validated_executables: relative_executables
@@ -481,6 +579,16 @@ impl ArtifactFetcher for ReqwestArtifactFetcher {
 #[async_trait]
 trait BinaryVersionValidator: Send + Sync {
     async fn validate(&self, path: &Path, version: &Version) -> StudioResult<()>;
+
+    async fn validate_pair(
+        &self,
+        runtime: &Path,
+        full_client: &Path,
+        version: &Version,
+    ) -> StudioResult<()> {
+        self.validate(runtime, version).await?;
+        self.validate(full_client, version).await
+    }
 }
 
 struct ProcessBinaryVersionValidator;
@@ -516,6 +624,89 @@ impl BinaryVersionValidator for ProcessBinaryVersionValidator {
         }
         Ok(())
     }
+
+    async fn validate_pair(
+        &self,
+        runtime: &Path,
+        full_client: &Path,
+        version: &Version,
+    ) -> StudioResult<()> {
+        let runtime = process_identity(runtime).await?;
+        let full_client = process_identity(full_client).await?;
+        if runtime.version != version.to_string() || full_client.version != version.to_string() {
+            return Err(StudioError::BinaryVersionValidationFailed {
+                path: full_client.path,
+                detail: format!(
+                    "expected version {version}, got runtime={} full-client={}",
+                    runtime.version, full_client.version
+                ),
+            });
+        }
+        match (runtime.git_sha, full_client.git_sha) {
+            (Some(runtime_sha), Some(full_client_sha)) if runtime_sha == full_client_sha => Ok(()),
+            (runtime_sha, full_client_sha) => Err(StudioError::BinaryVersionValidationFailed {
+                path: full_client.path,
+                detail: format!(
+                    "runtime/full-client release commit mismatch: runtime={runtime_sha:?} full-client={full_client_sha:?}"
+                ),
+            }),
+        }
+    }
+}
+
+struct BinaryIdentity {
+    path: String,
+    version: String,
+    git_sha: Option<String>,
+}
+
+async fn process_identity(path: &Path) -> StudioResult<BinaryIdentity> {
+    let mut command = Command::new(path);
+    command.arg("--version").env_clear().kill_on_drop(true);
+    let output = timeout(VERSION_TIMEOUT, command.output())
+        .await
+        .map_err(|_| StudioError::BinaryVersionValidationFailed {
+            path: path.display().to_string(),
+            detail: "--version timed out".into(),
+        })??;
+    if !output.status.success() {
+        return Err(StudioError::BinaryVersionValidationFailed {
+            path: path.display().to_string(),
+            detail: format!("--version exited with {}", output.status),
+        });
+    }
+    let stdout = String::from_utf8(output.stdout).map_err(|error| {
+        StudioError::BinaryVersionValidationFailed {
+            path: path.display().to_string(),
+            detail: error.to_string(),
+        }
+    })?;
+    parse_version_output(path, &stdout)
+}
+
+fn parse_version_output(path: &Path, stdout: &str) -> StudioResult<BinaryIdentity> {
+    let tokens = stdout.split_whitespace().collect::<Vec<_>>();
+    let Some(first) = tokens.first() else {
+        return Err(StudioError::BinaryVersionValidationFailed {
+            path: path.display().to_string(),
+            detail: "--version returned no identity".into(),
+        });
+    };
+    let (version, build_sha) = first.split_once('+').map_or_else(
+        || ((*first).to_owned(), None),
+        |(version, sha)| (version.to_owned(), Some(sha.to_owned())),
+    );
+    let labeled_sha = tokens
+        .windows(2)
+        .find_map(|pair| (pair[0] == "sha:").then(|| pair[1].to_owned()));
+    let git_sha = labeled_sha.or(build_sha).filter(|sha| {
+        (7..=64).contains(&sha.len()) && sha.bytes().all(|byte| byte.is_ascii_hexdigit())
+    });
+    Ok(BinaryIdentity {
+        path: path.display().to_string(),
+        version,
+        git_sha,
+    })
 }
 
 fn prepare_staging_root(runtime_root: &Path, staging_root: &Path) -> StudioResult<()> {
@@ -964,6 +1155,38 @@ fn validate_tunnel(
     extract_dir: &Path,
     extracted: &ExtractionResult,
 ) -> StudioResult<ValidatedPackage> {
+    validate_tunnel_package(
+        policy,
+        asset,
+        extract_dir,
+        extracted,
+        TUNNEL_RUNTIME_BINARY_NAME,
+    )
+}
+
+fn validate_tunnel_client_package(
+    policy: &ComponentPolicy,
+    asset: &ReleaseAsset,
+    extract_dir: &Path,
+    extracted: &ExtractionResult,
+) -> StudioResult<PathBuf> {
+    let validated = validate_tunnel_package(
+        policy,
+        asset,
+        extract_dir,
+        extracted,
+        TUNNEL_FULL_ASSET_PREFIX,
+    )?;
+    Ok(validated.executables[0].clone())
+}
+
+fn validate_tunnel_package(
+    policy: &ComponentPolicy,
+    asset: &ReleaseAsset,
+    extract_dir: &Path,
+    extracted: &ExtractionResult,
+    client_binary: &str,
+) -> StudioResult<ValidatedPackage> {
     let stem =
         asset
             .name
@@ -975,7 +1198,7 @@ fn validate_tunnel(
     let license = format!("{stem}-licenses.txt");
     let sbom = format!("{stem}.spdx.json");
     let expected = BTreeSet::from([
-        PathBuf::from("tunnel-client-runtime-cloudflared"),
+        PathBuf::from(client_binary),
         PathBuf::from("cloudflared"),
         PathBuf::from("cloudflared-manifest.json"),
         PathBuf::from("LICENSE"),
@@ -990,9 +1213,9 @@ fn validate_tunnel(
             detail: format!("unexpected tunnel ZIP structure: {actual:?}"),
         });
     }
-    let runtime = extract_dir.join("tunnel-client-runtime-cloudflared");
+    let runtime = extract_dir.join(client_binary);
     let cloudflared = extract_dir.join("cloudflared");
-    require_file(policy.id, &runtime, "tunnel-client-runtime-cloudflared")?;
+    require_file(policy.id, &runtime, client_binary)?;
     require_file(policy.id, &cloudflared, "cloudflared")?;
     let manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(extract_dir.join("cloudflared-manifest.json"))?)?;
@@ -1171,6 +1394,36 @@ mod tests {
         ) -> StudioResult<&'a ReleaseAsset> {
             select_release_asset(&self.policy, release, platform)
         }
+        fn select_companion_asset<'a>(
+            &self,
+            release: &'a AvailableRelease,
+            platform: Platform,
+        ) -> StudioResult<Option<&'a ReleaseAsset>> {
+            if self.policy.id != ComponentId::Tunnel {
+                return Ok(None);
+            }
+            let expected = format!(
+                "{TUNNEL_FULL_ASSET_PREFIX}-v{}-{platform}.zip",
+                release.version
+            );
+            let matches = release
+                .assets
+                .iter()
+                .filter(|asset| asset.name == expected)
+                .collect::<Vec<_>>();
+            match matches.as_slice() {
+                [asset] => Ok(Some(*asset)),
+                [] => Err(StudioError::ReleaseAssetNotFound {
+                    component: self.policy.id.to_string(),
+                    expected,
+                }),
+                _ => Err(StudioError::AmbiguousReleaseAsset {
+                    component: self.policy.id.to_string(),
+                    expected,
+                    count: matches.len(),
+                }),
+            }
+        }
         async fn checksum_manifest(&self, _release: &AvailableRelease) -> StudioResult<Vec<u8>> {
             Ok(self.manifest.clone())
         }
@@ -1219,7 +1472,48 @@ mod tests {
             policy.source.owner, policy.source.repository
         );
         let sha = sha256_bytes(&archive);
-        let manifest = format!("{sha}  {asset_name}\n").into_bytes();
+        let mut manifest = format!("{sha}  {asset_name}\n");
+        let mut assets = vec![ReleaseAsset {
+            name: asset_name.clone(),
+            download_url: url.clone(),
+        }];
+        let mut companion = None;
+        if id == ComponentId::Tunnel {
+            let companion_name = format!(
+                "{TUNNEL_FULL_ASSET_PREFIX}-v{version}-{platform}.zip",
+                platform = platform()
+            );
+            let companion_url = format!(
+                "https://github.com/{}/{}/releases/download/v{version}/{companion_name}",
+                policy.source.owner, policy.source.repository
+            );
+            let companion_stem = companion_name.strip_suffix(".zip").unwrap();
+            let companion_archive = zip_bytes(&[
+                (TUNNEL_FULL_ASSET_PREFIX, b"full-client", 0o644),
+                ("cloudflared", b"cloudflared", 0o644),
+                (
+                    "cloudflared-manifest.json",
+                    br#"{"version":"2026.8.2"}"#,
+                    0o644,
+                ),
+                ("LICENSE", b"license", 0o644),
+                ("NOTICE", b"notice", 0o644),
+                (
+                    &format!("{companion_stem}-licenses.txt"),
+                    b"licenses",
+                    0o644,
+                ),
+                (&format!("{companion_stem}.spdx.json"), b"{}", 0o644),
+            ]);
+            let companion_sha = sha256_bytes(&companion_archive);
+            manifest.push_str(&format!("{companion_sha}  {companion_name}\n"));
+            assets.push(ReleaseAsset {
+                name: companion_name,
+                download_url: companion_url.clone(),
+            });
+            companion = Some((companion_url, companion_archive));
+        }
+        let manifest = manifest.into_bytes();
         let release = AvailableRelease {
             component: id,
             version,
@@ -1227,10 +1521,7 @@ mod tests {
                 &format!("v{}", policy.id.as_str()),
                 &format!("v{}", policy.id.as_str()),
             ),
-            assets: vec![ReleaseAsset {
-                name: asset_name.clone(),
-                download_url: url.clone(),
-            }],
+            assets,
             checksum_manifest_url: format!(
                 "https://github.com/{}/{}/releases/download/check/SHA256SUMS.txt",
                 policy.source.owner, policy.source.repository
@@ -1242,6 +1533,9 @@ mod tests {
         };
         let fetcher = Arc::new(FakeFetcher::default());
         fetcher.insert(&url, archive);
+        if let Some((url, archive)) = companion {
+            fetcher.insert(&url, archive);
+        }
         let stager =
             ArtifactStager::with_dependencies(catalog, fetcher, Arc::new(FakeVersionValidator))
                 .unwrap();
@@ -1357,6 +1651,18 @@ mod tests {
         ]);
         let (_root, stager, provider, release, _) = setup(ComponentId::Tunnel, "0.0.14", zip);
         let staged = stager.stage(&provider, &release, platform()).await.unwrap();
+        assert_eq!(
+            staged.companion_asset_name.as_deref(),
+            Some("tunnel-client-v0.0.14-darwin-arm64.zip")
+        );
+        assert!(staged.package_root.join(TUNNEL_FULL_ASSET_PREFIX).is_file());
+        assert_eq!(staged.validated_executables.len(), 3);
+        assert_eq!(
+            stager
+                .load_ready(&stager.staged_id(&staged).unwrap())
+                .unwrap(),
+            staged
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -1369,6 +1675,69 @@ mod tests {
                 0o111
             );
         }
+    }
+
+    #[tokio::test]
+    async fn tunnel_stage_rejects_missing_or_unchecked_full_client() {
+        let stem = "tunnel-client-runtime-cloudflared-v0.0.14-darwin-arm64";
+        let archive = zip_bytes(&[
+            ("tunnel-client-runtime-cloudflared", b"runtime", 0o644),
+            ("cloudflared", b"cloudflared", 0o644),
+            (
+                "cloudflared-manifest.json",
+                br#"{"version":"2026.8.2"}"#,
+                0o644,
+            ),
+            ("LICENSE", b"l", 0o644),
+            ("NOTICE", b"n", 0o644),
+            (&format!("{stem}-licenses.txt"), b"licenses", 0o644),
+            (&format!("{stem}.spdx.json"), b"{}", 0o644),
+        ]);
+        let (_root, stager, mut provider, mut release, _) =
+            setup(ComponentId::Tunnel, "0.0.14", archive);
+        release
+            .assets
+            .retain(|asset| !asset.name.starts_with("tunnel-client-v"));
+        assert!(matches!(
+            stager.stage(&provider, &release, platform()).await.unwrap_err(),
+            StudioError::ReleaseAssetNotFound { component, expected }
+                if component == "tunnel" && expected == "tunnel-client-v0.0.14-darwin-arm64.zip"
+        ));
+
+        let full_name = "tunnel-client-v0.0.14-darwin-arm64.zip";
+        release.assets.push(ReleaseAsset {
+            name: full_name.into(),
+            download_url: "https://github.com/openai/tunnel-client/releases/download/v0.0.14/tunnel-client-v0.0.14-darwin-arm64.zip".into(),
+        });
+        provider.manifest = provider
+            .manifest
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.ends_with(full_name.as_bytes()))
+            .flat_map(|line| [line, b"\n".as_slice()])
+            .flatten()
+            .copied()
+            .collect();
+        assert!(matches!(
+            stager.stage(&provider, &release, platform()).await.unwrap_err(),
+            StudioError::ChecksumEntryMissing { component, asset }
+                if component == "tunnel" && asset == full_name
+        ));
+    }
+
+    #[test]
+    fn tunnel_version_identity_normalizes_both_official_output_forms() {
+        let runtime = parse_version_output(
+            Path::new("runtime"),
+            "0.0.14 git sha: 0f870e50a973fa820d4c409000059e181e8d242b flavor=runtime-cloudflared",
+        )
+        .unwrap();
+        let full = parse_version_output(
+            Path::new("full"),
+            "0.0.14+0f870e50a973fa820d4c409000059e181e8d242b",
+        )
+        .unwrap();
+        assert_eq!(runtime.version, full.version);
+        assert_eq!(runtime.git_sha, full.git_sha);
     }
 
     #[tokio::test]

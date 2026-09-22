@@ -7,9 +7,17 @@ use std::{
 };
 
 use async_trait::async_trait;
-use rmcp::{ServiceExt, model::CallToolRequestParams, transport::TokioChildProcess};
+use rmcp::{
+    ServiceError, ServiceExt,
+    model::{CallToolRequestParams, CallToolResult, ClientRequest, Request, ServerResult},
+    service::{Peer, PeerRequestOptions, RoleClient},
+    transport::TokioChildProcess,
+};
 use serde::Deserialize;
+use serde_json::{Value, json};
 use tokio::{
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    net::UnixStream,
     process::Command,
     sync::Mutex,
     task::JoinSet,
@@ -19,6 +27,7 @@ use tokio::{
 use crate::{
     error::{StudioError, StudioResult},
     realtime::{EventHub, StudioEvent},
+    storage::GatewayHistoryBatch,
     tunnel::{TunnelState, TunnelSupervisor},
 };
 
@@ -39,6 +48,8 @@ const RECONNECT_HEALTH_WINDOW: Duration = Duration::from_millis(800);
 const MAX_CONFIG_FILES: usize = 256;
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 const MAX_EXPECTED_TOOLS: usize = 4096;
+const CONTROL_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_CONTROL_RESPONSE_BYTES: usize = 16 * 1024;
 const GATEWAY_LIST_SERVERS: &str = "gateway_list_servers";
 const GATEWAY_RELOAD: &str = "gateway_reload";
 const GATEWAY_SET_ENABLED: &str = "gateway_set_server_enabled";
@@ -68,6 +79,167 @@ trait GatewayOwner: Send + Sync {
 
 struct TunnelGatewayOwner {
     tunnel: Arc<TunnelSupervisor>,
+}
+
+#[derive(Clone)]
+pub struct GatewayControlClient {
+    socket: PathBuf,
+}
+
+#[derive(Deserialize)]
+struct GatewayControlResponse {
+    ok: bool,
+    #[serde(default)]
+    instance_id: Option<String>,
+    state: String,
+    drain_generation: u64,
+    #[serde(default)]
+    history: Option<GatewayHistoryBatch>,
+}
+
+impl GatewayControlClient {
+    pub fn from_catalog(catalog: &ComponentCatalog) -> Self {
+        Self {
+            socket: catalog.runtime_root().join("gateway/control/gateway.sock"),
+        }
+    }
+
+    async fn exchange(&self, request: Value) -> StudioResult<GatewayControlResponse> {
+        let stream = timeout(CONTROL_TIMEOUT, UnixStream::connect(&self.socket))
+            .await
+            .map_err(|_| StudioError::UpdateVerificationFailed {
+                component: "gateway".into(),
+                detail: "Gateway control socket connection timed out".into(),
+            })?
+            .map_err(|_| StudioError::UpdateVerificationFailed {
+                component: "gateway".into(),
+                detail: "Gateway control socket is unavailable".into(),
+            })?;
+        let (reader, mut writer) = stream.into_split();
+        let mut encoded = serde_json::to_vec(&request).map_err(|error| {
+            StudioError::UpdateTransaction(format!(
+                "cannot encode Gateway control request: {error}"
+            ))
+        })?;
+        encoded.push(b'\n');
+        timeout(CONTROL_TIMEOUT, writer.write_all(&encoded))
+            .await
+            .map_err(|_| StudioError::UpdateVerificationFailed {
+                component: "gateway".into(),
+                detail: "Gateway control socket write timed out".into(),
+            })?
+            .map_err(|_| StudioError::UpdateVerificationFailed {
+                component: "gateway".into(),
+                detail: "Gateway control socket write failed".into(),
+            })?;
+        let mut line = Vec::new();
+        let mut reader = BufReader::new(reader);
+        let count = timeout(CONTROL_TIMEOUT, reader.read_until(b'\n', &mut line))
+            .await
+            .map_err(|_| StudioError::UpdateVerificationFailed {
+                component: "gateway".into(),
+                detail: "Gateway control socket response timed out".into(),
+            })?
+            .map_err(|_| StudioError::UpdateVerificationFailed {
+                component: "gateway".into(),
+                detail: "Gateway control socket response failed".into(),
+            })?;
+        if count == 0 || count > MAX_CONTROL_RESPONSE_BYTES || line.last() != Some(&b'\n') {
+            return Err(StudioError::UpdateVerificationFailed {
+                component: "gateway".into(),
+                detail: "Gateway control socket response is invalid".into(),
+            });
+        }
+        serde_json::from_slice(&line[..line.len() - 1]).map_err(|_| {
+            StudioError::UpdateVerificationFailed {
+                component: "gateway".into(),
+                detail: "Gateway control socket response schema is invalid".into(),
+            }
+        })
+    }
+
+    async fn drain_for_update(&self) -> StudioResult<u64> {
+        self.drain("gateway_update").await
+    }
+
+    pub async fn history_after(
+        &self,
+        after_sequence: u64,
+    ) -> StudioResult<(String, GatewayHistoryBatch)> {
+        let response = self
+            .exchange(json!({
+                "version": 1,
+                "action": "history",
+                "after_sequence": after_sequence,
+            }))
+            .await?;
+        let history = response.history.ok_or_else(|| {
+            StudioError::History("Gateway did not provide a telemetry history batch".into())
+        })?;
+        if !response.ok || history.events.len() > 16 || history.last_sequence < after_sequence {
+            return Err(StudioError::History(
+                "Gateway telemetry response is invalid".into(),
+            ));
+        }
+        let instance_id = response
+            .instance_id
+            .filter(|value| !value.is_empty() && value.len() <= 128)
+            .ok_or_else(|| {
+                StudioError::History("Gateway telemetry instance identity is invalid".into())
+            })?;
+        Ok((instance_id, history))
+    }
+
+    pub(crate) async fn drain_for_reconciliation(&self) -> StudioResult<u64> {
+        self.drain("reconciliation").await
+    }
+
+    async fn drain(&self, reason: &str) -> StudioResult<u64> {
+        let response = self
+            .exchange(json!({
+                "version": 1,
+                "action": "drain",
+                "reason": reason
+            }))
+            .await?;
+        if !response.ok || response.state != "DRAINED" || response.drain_generation == 0 {
+            return Err(StudioError::UpdateVerificationFailed {
+                component: "gateway".into(),
+                detail: "Gateway did not confirm a drained control generation".into(),
+            });
+        }
+        Ok(response.drain_generation)
+    }
+
+    pub(crate) async fn resume(&self, generation: u64) -> StudioResult<()> {
+        let response = self
+            .exchange(json!({
+                "version": 1,
+                "action": "resume",
+                "drain_generation": generation
+            }))
+            .await?;
+        if !response.ok || response.state != "RUNNING" || response.drain_generation != generation {
+            return Err(StudioError::UpdateVerificationFailed {
+                component: "gateway".into(),
+                detail: "Gateway did not resume requested drain generation".into(),
+            });
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn reload(&self) -> StudioResult<()> {
+        let response = self
+            .exchange(json!({"version": 1, "action": "reload"}))
+            .await?;
+        if !response.ok || response.state != "RUNNING" {
+            return Err(StudioError::UpdateVerificationFailed {
+                component: "gateway".into(),
+                detail: "Gateway did not confirm control reload completion".into(),
+            });
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -106,6 +278,7 @@ struct GatewayCatalogSnapshot {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 struct GatewayChildConfigProjection {
     name: String,
     #[serde(default = "default_true")]
@@ -121,6 +294,23 @@ struct GatewayChildConfigProjection {
     tool_allowlist: Vec<String>,
     #[serde(default = "default_child_timeout_ms")]
     timeout_ms: u64,
+    #[serde(default)]
+    restart: GatewayRestartConfigProjection,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct GatewayRestartConfigProjection {
+    #[serde(default)]
+    policy: GatewayRestartPolicy,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum GatewayRestartPolicy {
+    Never,
+    #[default]
+    OnFailure,
 }
 
 fn default_child_timeout_ms() -> u64 {
@@ -260,6 +450,37 @@ impl GatewayCatalogSnapshot {
                 )));
             }
         }
+        self.validate_trusted_commands(catalog.bin_root())
+    }
+
+    fn validate_trusted_commands(&self, trusted_bin_root: &Path) -> StudioResult<()> {
+        let trusted_bin_root = fs::canonicalize(trusted_bin_root).map_err(|error| {
+            StudioError::UpdateTransaction(format!(
+                "trusted Gateway bin root does not resolve: {error}"
+            ))
+        })?;
+        for config in self.children.values() {
+            let command_path = Path::new(&config.command);
+            let metadata = fs::symlink_metadata(command_path).map_err(|error| {
+                StudioError::UpdateTransaction(format!(
+                    "Gateway child {} command does not resolve: {error}",
+                    config.name
+                ))
+            })?;
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(StudioError::UpdateTransaction(format!(
+                    "Gateway child {} command must be a regular non-symlink file",
+                    config.name
+                )));
+            }
+            let actual = fs::canonicalize(command_path)?;
+            if actual.parent() != Some(trusted_bin_root.as_path()) {
+                return Err(StudioError::UpdateTransaction(format!(
+                    "Gateway child {} command is outside trusted bin_root",
+                    config.name
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -293,6 +514,12 @@ fn validate_child_projection(config: &GatewayChildConfigProjection) -> StudioRes
         return Err(StudioError::UpdateVerificationFailed {
             component: ComponentId::Gateway.to_string(),
             detail: "Gateway child config has invalid identity or timeout".into(),
+        });
+    }
+    if config.command.trim().is_empty() || config.command.as_bytes().contains(&0) {
+        return Err(StudioError::UpdateVerificationFailed {
+            component: ComponentId::Gateway.to_string(),
+            detail: "Gateway child command is invalid".into(),
         });
     }
     if let Some(prefix) = &config.tool_prefix
@@ -473,6 +700,7 @@ async fn independently_expected_gateway_tools(
                 component: ComponentId::Gateway.to_string(),
                 detail: "Gateway binary has no trusted bin parent".into(),
             })?;
+    snapshot.validate_trusted_commands(trusted_bin_root)?;
     let mut tasks = JoinSet::new();
     for config in snapshot.children.values().filter(|config| config.enabled) {
         tasks.spawn(probe_expected_child_tools(
@@ -572,7 +800,85 @@ struct GatewayServerStatus {
     name: String,
     enabled: bool,
     running: bool,
+    restart_policy: GatewayRestartPolicy,
     error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GatewayReloadResult {
+    configured_servers: usize,
+    enabled_servers: usize,
+    running_servers: usize,
+    exposed_child_tools: usize,
+    failed_servers: Vec<String>,
+}
+
+async fn call_gateway_tool(
+    peer: &Peer<RoleClient>,
+    name: &str,
+    request_timeout: Duration,
+    side_effecting: bool,
+) -> StudioResult<CallToolResult> {
+    let request =
+        ClientRequest::CallToolRequest(Request::new(CallToolRequestParams::new(name.to_owned())));
+    let mut handle = peer
+        .send_cancellable_request(request, PeerRequestOptions::no_options())
+        .await
+        .map_err(|error| StudioError::UpdateVerificationFailed {
+            component: ComponentId::Gateway.to_string(),
+            detail: format!("Gateway {name} request could not be dispatched: {error}"),
+        })?;
+    let mut deadline = Box::pin(sleep(request_timeout));
+    let response = tokio::select! {
+        response = &mut handle.rx => response.map_err(|_| ServiceError::TransportClosed),
+        _ = &mut deadline => {
+            let request_id = handle.id.clone();
+            let cancel_error = handle
+                .cancel(Some(format!("Studio verification timeout after {} ms", request_timeout.as_millis())))
+                .await
+                .err();
+            let outcome = if side_effecting {
+                "outcome is unknown; do not retry"
+            } else {
+                "request was cancelled"
+            };
+            return Err(StudioError::UpdateVerificationFailed {
+                component: ComponentId::Gateway.to_string(),
+                detail: format!(
+                    "Gateway {name} timed out after dispatch (request_id={request_id:?}); {outcome}; cancel_error={cancel_error:?}"
+                ),
+            });
+        }
+    };
+    let response = response.map_err(|error| StudioError::UpdateVerificationFailed {
+        component: ComponentId::Gateway.to_string(),
+        detail: format!("Gateway {name} request failed after dispatch: {error}"),
+    })?;
+    let response = response.map_err(|error| StudioError::UpdateVerificationFailed {
+        component: ComponentId::Gateway.to_string(),
+        detail: format!("Gateway {name} request failed after dispatch: {error}"),
+    })?;
+    let ServerResult::CallToolResult(result) = response else {
+        return Err(StudioError::UpdateVerificationFailed {
+            component: ComponentId::Gateway.to_string(),
+            detail: format!("Gateway {name} returned an unexpected response type"),
+        });
+    };
+    if result.is_error == Some(true) {
+        let outcome_unknown = result.structured_content.as_ref().is_some_and(|content| {
+            content.get("code").and_then(serde_json::Value::as_str) == Some("child_outcome_unknown")
+        });
+        let outcome = if outcome_unknown {
+            "outcome is unknown; do not retry"
+        } else {
+            "Gateway returned an error"
+        };
+        return Err(StudioError::UpdateVerificationFailed {
+            component: ComponentId::Gateway.to_string(),
+            detail: format!("Gateway {name} failed: {outcome}"),
+        });
+    }
+    Ok(result)
 }
 
 #[async_trait]
@@ -640,27 +946,9 @@ impl GatewayProbe for ProcessGatewayProbe {
                 }
             }
 
-            let response = timeout(
-                PROBE_TIMEOUT,
-                running
-                    .peer()
-                    .call_tool(CallToolRequestParams::new(GATEWAY_LIST_SERVERS)),
-            )
-            .await
-            .map_err(|_| StudioError::UpdateVerificationFailed {
-                component: ComponentId::Gateway.to_string(),
-                detail: "Gateway child catalog probe timed out".into(),
-            })?
-            .map_err(|error| StudioError::UpdateVerificationFailed {
-                component: ComponentId::Gateway.to_string(),
-                detail: format!("Gateway child catalog probe failed: {error}"),
-            })?;
-            if response.is_error == Some(true) {
-                return Err(StudioError::UpdateVerificationFailed {
-                    component: ComponentId::Gateway.to_string(),
-                    detail: "Gateway child catalog probe returned an error".into(),
-                });
-            }
+            let response =
+                call_gateway_tool(running.peer(), GATEWAY_LIST_SERVERS, PROBE_TIMEOUT, false)
+                    .await?;
             let structured = response.structured_content.ok_or_else(|| {
                 StudioError::UpdateVerificationFailed {
                     component: ComponentId::Gateway.to_string(),
@@ -675,6 +963,42 @@ impl GatewayProbe for ProcessGatewayProbe {
                     }
                 })?;
             verify_gateway_catalog_shape(&status, expected, &tool_names, &expected_tool_names)?;
+
+            let reload =
+                call_gateway_tool(running.peer(), GATEWAY_RELOAD, PROBE_TIMEOUT, true).await?;
+            let reload: GatewayReloadResult =
+                serde_json::from_value(reload.structured_content.ok_or_else(|| {
+                    StudioError::UpdateVerificationFailed {
+                        component: ComponentId::Gateway.to_string(),
+                        detail: "Gateway reload returned no structured result".into(),
+                    }
+                })?)
+                .map_err(|error| StudioError::UpdateVerificationFailed {
+                    component: ComponentId::Gateway.to_string(),
+                    detail: format!("Gateway reload result is malformed: {error}"),
+                })?;
+            verify_reload_summary(&reload, &status)?;
+
+            let after_reload =
+                call_gateway_tool(running.peer(), GATEWAY_LIST_SERVERS, PROBE_TIMEOUT, false)
+                    .await?;
+            let after_reload: GatewayListResult =
+                serde_json::from_value(after_reload.structured_content.ok_or_else(|| {
+                    StudioError::UpdateVerificationFailed {
+                        component: ComponentId::Gateway.to_string(),
+                        detail: "Gateway post-reload catalog returned no structured result".into(),
+                    }
+                })?)
+                .map_err(|error| StudioError::UpdateVerificationFailed {
+                    component: ComponentId::Gateway.to_string(),
+                    detail: format!("Gateway post-reload catalog is malformed: {error}"),
+                })?;
+            verify_gateway_catalog_shape(
+                &after_reload,
+                expected,
+                &tool_names,
+                &expected_tool_names,
+            )?;
             expected.verify_unchanged(config_dir)?;
             Ok(GatewayProbeSummary {
                 configured_servers: status.servers.len(),
@@ -775,6 +1099,12 @@ fn verify_probe_status(
                 detail: "Gateway child enabled state differs from servers.d".into(),
             });
         }
+        if server.restart_policy != expected.children[&server.name].restart.policy {
+            return Err(StudioError::UpdateVerificationFailed {
+                component: ComponentId::Gateway.to_string(),
+                detail: "Gateway child restart policy differs from servers.d".into(),
+            });
+        }
         if server.enabled && (!server.running || server.error.is_some()) {
             return Err(StudioError::UpdateVerificationFailed {
                 component: ComponentId::Gateway.to_string(),
@@ -809,12 +1139,41 @@ fn verify_probe_status(
     Ok(())
 }
 
+fn verify_reload_summary(
+    reload: &GatewayReloadResult,
+    status: &GatewayListResult,
+) -> StudioResult<()> {
+    let enabled_servers = status
+        .servers
+        .iter()
+        .filter(|server| server.enabled)
+        .count();
+    let running_servers = status
+        .servers
+        .iter()
+        .filter(|server| server.running)
+        .count();
+    if reload.configured_servers != status.servers.len()
+        || reload.enabled_servers != enabled_servers
+        || reload.running_servers != running_servers
+        || reload.exposed_child_tools != status.exposed_child_tools
+        || !reload.failed_servers.is_empty()
+    {
+        return Err(StudioError::UpdateVerificationFailed {
+            component: ComponentId::Gateway.to_string(),
+            detail: "Gateway selective reload summary does not match healthy catalog".into(),
+        });
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 pub struct GatewayUpdateManager {
     catalog: ComponentCatalog,
     stager: ArtifactStager,
     provider: Arc<dyn ReleaseProvider>,
     owner: Arc<dyn GatewayOwner>,
+    control: Option<GatewayControlClient>,
     probe: Arc<dyn GatewayProbe>,
     inventory: Arc<InventoryService>,
     events: EventHub,
@@ -833,11 +1192,13 @@ impl GatewayUpdateManager {
     ) -> StudioResult<Self> {
         let stager = ArtifactStager::new(catalog.clone())?;
         let provider = Arc::new(ThirteenthXReleaseProvider::new(catalog.clone())?);
+        let control = GatewayControlClient::from_catalog(&catalog);
         Ok(Self {
             catalog,
             stager,
             provider,
             owner: Arc::new(TunnelGatewayOwner { tunnel }),
+            control: Some(control),
             probe: Arc::new(ProcessGatewayProbe),
             inventory,
             events,
@@ -863,6 +1224,7 @@ impl GatewayUpdateManager {
             stager,
             provider,
             owner,
+            control: None,
             probe,
             inventory,
             events,
@@ -1065,10 +1427,39 @@ impl GatewayUpdateManager {
                 None,
             )
             .await?;
+            let drain_generation = match self.control.as_ref() {
+                Some(control) => match control.drain_for_update().await {
+                    Ok(generation) => generation,
+                    Err(error) => {
+                        self.update_failed(
+                            transaction_id,
+                            Some(true),
+                            format!("Gateway drain prerequisite failed: {error}"),
+                        )
+                        .await?;
+                        return Err(error);
+                    }
+                },
+                None => 0,
+            };
             if let Err(error) = self.owner.stop().await {
+                let resume_error = if drain_generation != 0 {
+                    self.control
+                        .as_ref()
+                        .expect("Gateway control exists for a drain generation")
+                        .resume(drain_generation)
+                        .await
+                        .err()
+                } else {
+                    None
+                };
                 let _ = remove_rollback_material(&rollback);
-                self.update_failed(transaction_id, Some(true), format!("stop failed: {error}"))
-                    .await?;
+                self.update_failed(
+                    transaction_id,
+                    Some(true),
+                    format!("stop failed: {error}; drain resume failed: {resume_error:?}"),
+                )
+                .await?;
                 return Err(error);
             }
         }
@@ -1595,6 +1986,8 @@ fn new_gateway_transaction_id() -> String {
 mod tests {
     use std::{path::PathBuf, sync::Mutex as StdMutex};
 
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
     use super::super::transaction::sha256_path;
 
     use super::*;
@@ -1778,8 +2171,10 @@ mod tests {
         let dir = root.join("runtime/gateway/servers.d");
         fs::create_dir_all(&dir).unwrap();
         let git = root.join("bin/rust-mcp-git");
+        let disabled = root.join("bin/disabled-launcher");
         fs::create_dir_all(git.parent().unwrap()).unwrap();
         fs::write(&git, b"git").unwrap();
+        fs::write(&disabled, b"disabled").unwrap();
         fs::write(
             dir.join("git.yaml"),
             format!(
@@ -1794,11 +2189,14 @@ args: []
         .unwrap();
         fs::write(
             dir.join("disabled.yaml"),
-            "name: disabled
+            format!(
+                "name: disabled
 enabled: false
-command: /tmp/disabled
+command: {}
 args: []
 ",
+                disabled.display()
+            ),
         )
         .unwrap();
         dir
@@ -1836,6 +2234,8 @@ args: []
             platform: platform(),
             asset_name,
             archive_sha256: archive_sha,
+            companion_asset_name: None,
+            companion_archive_sha256: None,
             staging_path: root.clone(),
             package_root,
             validated_executables: vec![staged_binary.clone()],
@@ -1945,6 +2345,40 @@ args: []
         assert_eq!(*owner.stop_count.lock().unwrap(), 0);
         before.verify_unchanged(&servers_dir).unwrap();
         assert!(String::from_utf8_lossy(&fs::read(target).unwrap()).contains("1.1.0"));
+    }
+
+    #[tokio::test]
+    async fn gateway_control_client_requires_matching_drained_generation() {
+        let root = tempfile::TempDir::new().unwrap();
+        let control_dir = root.path().join("runtime/gateway/control");
+        fs::create_dir_all(&control_dir).unwrap();
+        let socket = control_dir.join("gateway.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            for response in [
+                r#"{"ok":true,"state":"DRAINED","drain_generation":9}"#,
+                r#"{"ok":true,"state":"RUNNING","drain_generation":9}"#,
+                r#"{"ok":true,"state":"RUNNING","drain_generation":10}"#,
+            ] {
+                let (stream, _) = listener.accept().await.unwrap();
+                let (read, mut write) = stream.into_split();
+                let mut line = Vec::new();
+                BufReader::new(read)
+                    .read_until(b'\n', &mut line)
+                    .await
+                    .unwrap();
+                assert!(line.ends_with(b"\n"));
+                write.write_all(response.as_bytes()).await.unwrap();
+                write.write_all(b"\n").await.unwrap();
+            }
+        });
+        let client = GatewayControlClient {
+            socket: socket.clone(),
+        };
+        assert_eq!(client.drain_for_update().await.unwrap(), 9);
+        client.resume(9).await.unwrap();
+        client.reload().await.unwrap();
+        server.await.unwrap();
     }
 
     #[tokio::test]
@@ -2074,12 +2508,14 @@ args: []
                     name: "git".into(),
                     enabled: true,
                     running: true,
+                    restart_policy: GatewayRestartPolicy::OnFailure,
                     error: None,
                 },
                 GatewayServerStatus {
                     name: "disabled".into(),
                     enabled: false,
                     running: false,
+                    restart_policy: GatewayRestartPolicy::OnFailure,
                     error: None,
                 },
             ],
@@ -2099,6 +2535,103 @@ args: []
     }
 
     #[test]
+    fn child_catalog_status_rejects_restart_policy_mismatch() {
+        let root = tempfile::TempDir::new().unwrap();
+        let dir = write_servers_dir(root.path());
+        let expected = GatewayCatalogSnapshot::capture(&dir).unwrap();
+        let status = GatewayListResult {
+            servers: vec![
+                GatewayServerStatus {
+                    name: "git".into(),
+                    enabled: true,
+                    running: true,
+                    restart_policy: GatewayRestartPolicy::Never,
+                    error: None,
+                },
+                GatewayServerStatus {
+                    name: "disabled".into(),
+                    enabled: false,
+                    running: false,
+                    restart_policy: GatewayRestartPolicy::OnFailure,
+                    error: None,
+                },
+            ],
+            exposed_child_tools: 2,
+            gateway_tools: vec![
+                GATEWAY_LIST_SERVERS.into(),
+                GATEWAY_RELOAD.into(),
+                GATEWAY_SET_ENABLED.into(),
+            ],
+        };
+        assert!(verify_probe_status(&status, &expected).is_err());
+    }
+
+    #[test]
+    fn selective_reload_summary_must_match_healthy_catalog() {
+        let status = GatewayListResult {
+            servers: vec![GatewayServerStatus {
+                name: "git".into(),
+                enabled: true,
+                running: true,
+                restart_policy: GatewayRestartPolicy::OnFailure,
+                error: None,
+            }],
+            exposed_child_tools: 2,
+            gateway_tools: vec![],
+        };
+        let summary = GatewayReloadResult {
+            configured_servers: 1,
+            enabled_servers: 1,
+            running_servers: 1,
+            exposed_child_tools: 2,
+            failed_servers: vec![],
+        };
+        verify_reload_summary(&summary, &status).unwrap();
+
+        let mut failed = summary;
+        failed.failed_servers.push("git".into());
+        assert!(verify_reload_summary(&failed, &status).is_err());
+    }
+
+    #[test]
+    fn gateway_catalog_rejects_launcher_outside_trusted_bin_root() {
+        let root = tempfile::TempDir::new().unwrap();
+        let catalog = ComponentCatalog::new(
+            HostRuntimeRoots::new(root.path().join("bin"), root.path().join("runtime")).unwrap(),
+        );
+        fs::create_dir_all(catalog.bin_root()).unwrap();
+        fs::create_dir_all(catalog.runtime_root().join("gateway/servers.d")).unwrap();
+        let launcher = catalog.bin_root().join("sonarqube-mcp");
+        fs::write(&launcher, b"trusted launcher").unwrap();
+        let config = catalog
+            .runtime_root()
+            .join("gateway/servers.d/sonarqube.yaml");
+        fs::write(
+            &config,
+            format!(
+                "name: sonarqube\nenabled: false\ncommand: {}\nargs: []\n",
+                launcher.display()
+            ),
+        )
+        .unwrap();
+        let snapshot = GatewayCatalogSnapshot::capture(config.parent().unwrap()).unwrap();
+        snapshot.validate_managed_paths(&catalog).unwrap();
+
+        let untrusted = root.path().join("untrusted-launcher");
+        fs::write(&untrusted, b"untrusted launcher").unwrap();
+        fs::write(
+            &config,
+            format!(
+                "name: sonarqube\nenabled: false\ncommand: {}\nargs: []\n",
+                untrusted.display()
+            ),
+        )
+        .unwrap();
+        let snapshot = GatewayCatalogSnapshot::capture(config.parent().unwrap()).unwrap();
+        assert!(snapshot.validate_managed_paths(&catalog).is_err());
+    }
+
+    #[test]
     fn independent_catalog_policy_applies_allowlist_before_prefix_and_rejects_unknown() {
         let config = GatewayChildConfigProjection {
             name: "child".into(),
@@ -2109,6 +2642,7 @@ args: []
             tool_prefix: Some("p_".into()),
             tool_allowlist: vec!["alpha".into()],
             timeout_ms: 30_000,
+            restart: GatewayRestartConfigProjection::default(),
         };
         assert_eq!(
             apply_child_exposure_policy(&config, vec!["alpha".into(), "beta".into()]).unwrap(),
@@ -2172,6 +2706,7 @@ args: []
             tool_prefix: Some("same_".into()),
             tool_allowlist: vec![],
             timeout_ms: 30_000,
+            restart: GatewayRestartConfigProjection::default(),
         };
         let two = GatewayChildConfigProjection {
             name: "two".into(),
@@ -2196,12 +2731,14 @@ args: []
                     name: "git".into(),
                     enabled: true,
                     running: true,
+                    restart_policy: GatewayRestartPolicy::OnFailure,
                     error: None,
                 },
                 GatewayServerStatus {
                     name: "disabled".into(),
                     enabled: false,
                     running: false,
+                    restart_policy: GatewayRestartPolicy::OnFailure,
                     error: None,
                 },
             ],
@@ -2248,12 +2785,14 @@ args: []
                     name: "git".into(),
                     enabled: true,
                     running: true,
+                    restart_policy: GatewayRestartPolicy::OnFailure,
                     error: None,
                 },
                 GatewayServerStatus {
                     name: "disabled".into(),
                     enabled: false,
                     running: false,
+                    restart_policy: GatewayRestartPolicy::OnFailure,
                     error: None,
                 },
             ],

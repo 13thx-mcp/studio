@@ -1,12 +1,14 @@
 use std::{
     collections::{BTreeMap, VecDeque},
     fs,
+    net::IpAddr,
     path::{Path, PathBuf},
     process::Stdio,
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::{
@@ -54,6 +56,8 @@ pub struct TunnelConfig {
     pub working_dir: PathBuf,
     pub config_file: PathBuf,
     #[serde(default)]
+    pub health_url_file: Option<PathBuf>,
+    #[serde(default)]
     pub env: BTreeMap<String, SecretReference>,
 }
 
@@ -64,6 +68,7 @@ impl Default for TunnelConfig {
             runtime: PathBuf::from("../tunnel-client/tunnel-client-runtime-cloudflared"),
             working_dir: PathBuf::from("../tunnel-client"),
             config_file: PathBuf::from("../tunnel-client/config.yaml"),
+            health_url_file: None,
             env: BTreeMap::new(),
         }
     }
@@ -111,6 +116,39 @@ pub struct TunnelStatus {
     pub crash_count: u64,
     pub last_exit_code: Option<i32>,
     pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TunnelDiagnosticState {
+    Available,
+    Unavailable,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TunnelDiagnosticStatus {
+    pub state: TunnelDiagnosticState,
+    pub full_client_available: bool,
+    pub detail: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TunnelHealthProbe {
+    Passed,
+    Failed,
+    Unknown,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TunnelHealthStatus {
+    pub process_running: bool,
+    pub liveness: TunnelHealthProbe,
+    pub readiness: TunnelHealthProbe,
+    pub mcp_discovery_health: TunnelHealthProbe,
+    pub control_plane_poll_health: TunnelHealthProbe,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -278,6 +316,145 @@ impl TunnelSupervisor {
 
     pub async fn logs(&self) -> Vec<TunnelLogEntry> {
         self.runtime.lock().await.logs.iter().cloned().collect()
+    }
+
+    /// Runs the co-installed full client only for its bounded read-only doctor
+    /// capability. The Studio-owned runtime-cloudflared daemon is never used
+    /// for this operation and never receives native-runtime ownership.
+    pub async fn diagnostics(&self) -> TunnelDiagnosticStatus {
+        let Ok((working_dir, runtime, _)) = self.validated_paths() else {
+            return TunnelDiagnosticStatus {
+                state: TunnelDiagnosticState::Unavailable,
+                full_client_available: false,
+                detail: "managed_runtime_unavailable",
+            };
+        };
+        let Some(parent) = runtime.parent() else {
+            return TunnelDiagnosticStatus {
+                state: TunnelDiagnosticState::Unavailable,
+                full_client_available: false,
+                detail: "managed_runtime_layout_invalid",
+            };
+        };
+        let full_client = parent.join("tunnel-client");
+        let Ok(metadata) = fs::symlink_metadata(&full_client) else {
+            return TunnelDiagnosticStatus {
+                state: TunnelDiagnosticState::Unavailable,
+                full_client_available: false,
+                detail: "full_client_unavailable",
+            };
+        };
+        if metadata.file_type().is_symlink()
+            || !metadata.is_file()
+            || !matches!(is_executable(&full_client), Ok(true))
+        {
+            return TunnelDiagnosticStatus {
+                state: TunnelDiagnosticState::Unavailable,
+                full_client_available: false,
+                detail: "full_client_unavailable",
+            };
+        }
+        let Ok((env, _)) = self.resolve_secret_env() else {
+            return TunnelDiagnosticStatus {
+                state: TunnelDiagnosticState::Unavailable,
+                full_client_available: true,
+                detail: "diagnostic_credentials_unavailable",
+            };
+        };
+        let output = timeout(
+            Duration::from_secs(5),
+            Command::new(&full_client)
+                .arg("doctor")
+                .arg("--json")
+                .current_dir(working_dir)
+                .env_clear()
+                .envs(env)
+                .stdin(Stdio::null())
+                .output(),
+        )
+        .await;
+        let Ok(Ok(output)) = output else {
+            return TunnelDiagnosticStatus {
+                state: TunnelDiagnosticState::Failed,
+                full_client_available: true,
+                detail: "doctor_execution_failed",
+            };
+        };
+        if !output.status.success() {
+            return TunnelDiagnosticStatus {
+                state: TunnelDiagnosticState::Failed,
+                full_client_available: true,
+                detail: "doctor_reported_failure",
+            };
+        }
+        if output.stdout.len() > 64 * 1024
+            || serde_json::from_slice::<serde_json::Value>(&output.stdout).is_err()
+        {
+            return TunnelDiagnosticStatus {
+                state: TunnelDiagnosticState::Failed,
+                full_client_available: true,
+                detail: "doctor_output_invalid",
+            };
+        }
+        TunnelDiagnosticStatus {
+            state: TunnelDiagnosticState::Available,
+            full_client_available: true,
+            detail: "doctor_completed",
+        }
+    }
+
+    /// Polls only the daemon's loopback health surfaces. These observations do
+    /// not start discovery, mutate configuration, or grant daemon ownership to
+    /// the co-installed full client.
+    pub async fn health(&self) -> TunnelHealthStatus {
+        let process_running = matches!(self.runtime.lock().await.state, TunnelState::Running);
+        let unavailable = || TunnelHealthStatus {
+            process_running,
+            liveness: TunnelHealthProbe::Unavailable,
+            readiness: TunnelHealthProbe::Unavailable,
+            mcp_discovery_health: TunnelHealthProbe::Unavailable,
+            control_plane_poll_health: TunnelHealthProbe::Unavailable,
+        };
+        let Some(configured_url_file) = &self.config.health_url_file else {
+            return unavailable();
+        };
+        let Ok((working_dir, _, _)) = self.validated_paths() else {
+            return unavailable();
+        };
+        let Ok(url_file) = canonicalize(
+            &self.base_dir,
+            configured_url_file,
+            "tunnel health URL file",
+        ) else {
+            return unavailable();
+        };
+        if !url_file.starts_with(&working_dir) || !url_file.is_file() {
+            return unavailable();
+        }
+        let Ok(url_text) = fs::read_to_string(&url_file) else {
+            return unavailable();
+        };
+        if url_text.len() > 1024 {
+            return unavailable();
+        }
+        let Ok(base_url) = local_health_base_url(url_text.trim()) else {
+            return unavailable();
+        };
+        let Ok(client) = Client::builder().timeout(Duration::from_secs(2)).build() else {
+            return unavailable();
+        };
+        TunnelHealthStatus {
+            process_running,
+            liveness: status_probe(&client, health_url(&base_url, "/healthz")).await,
+            readiness: status_probe(&client, health_url(&base_url, "/readyz")).await,
+            mcp_discovery_health: component_probe(&client, health_url(&base_url, "/health/mcp"))
+                .await,
+            control_plane_poll_health: component_probe(
+                &client,
+                health_url(&base_url, "/health/control-plane"),
+            )
+            .await,
+        }
     }
 
     pub(crate) fn validate_gateway_binding(
@@ -963,6 +1140,79 @@ fn redact_named_field(mut value: String, key: &str) -> String {
     value
 }
 
+fn local_health_base_url(value: &str) -> StudioResult<Url> {
+    let mut url = Url::parse(value)
+        .map_err(|_| StudioError::Config("tunnel health URL file is invalid".into()))?;
+    if url.scheme() != "http"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || !url
+            .host_str()
+            .and_then(|host| host.parse::<IpAddr>().ok())
+            .is_some_and(|address| address.is_loopback())
+    {
+        return Err(StudioError::Config(
+            "tunnel health URL must use loopback HTTP without credentials".into(),
+        ));
+    }
+    url.set_path("/");
+    url.set_query(None);
+    url.set_fragment(None);
+    Ok(url)
+}
+
+fn health_url(base: &Url, path: &str) -> Url {
+    let mut url = base.clone();
+    url.set_path(path);
+    url.set_query(None);
+    url
+}
+
+async fn status_probe(client: &Client, url: Url) -> TunnelHealthProbe {
+    match client.get(url).send().await {
+        Ok(response) if response.status().is_success() => TunnelHealthProbe::Passed,
+        Ok(_) => TunnelHealthProbe::Failed,
+        Err(_) => TunnelHealthProbe::Unknown,
+    }
+}
+
+async fn component_probe(client: &Client, url: Url) -> TunnelHealthProbe {
+    let Ok(mut response) = client.get(url).send().await else {
+        return TunnelHealthProbe::Unknown;
+    };
+    if !response.status().is_success() {
+        return TunnelHealthProbe::Failed;
+    }
+    let mut bytes = Vec::new();
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) => {
+                if bytes.len().saturating_add(chunk.len()) > 64 * 1024 {
+                    return TunnelHealthProbe::Unknown;
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            Ok(None) => break,
+            Err(_) => return TunnelHealthProbe::Unknown,
+        }
+    }
+    match serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .as_deref()
+    {
+        Some("ok") | Some("disabled") => TunnelHealthProbe::Passed,
+        Some("degraded") => TunnelHealthProbe::Failed,
+        Some("unknown") | None => TunnelHealthProbe::Unknown,
+        Some(_) => TunnelHealthProbe::Unknown,
+    }
+}
+
 fn spawn_log_reader<R>(
     runtime: Arc<Mutex<RuntimeState>>,
     reader: R,
@@ -1097,6 +1347,15 @@ mod tests {
     }
 
     #[test]
+    fn health_url_requires_literal_loopback_http() {
+        assert!(local_health_base_url("http://127.0.0.1:8080/readyz").is_ok());
+        assert!(local_health_base_url("https://127.0.0.1:8080/readyz").is_err());
+        assert!(local_health_base_url("http://localhost:8080/readyz").is_err());
+        assert!(local_health_base_url("http://192.0.2.1:8080/readyz").is_err());
+        assert!(local_health_base_url("http://user:pass@127.0.0.1:8080/readyz").is_err());
+    }
+
+    #[test]
     fn gateway_binding_matches_exact_server_owned_paths() {
         let root = tempfile::tempdir().unwrap();
         let working = root.path().join("tunnel");
@@ -1135,6 +1394,7 @@ mod tests {
                 runtime: runtime.clone(),
                 working_dir: working.clone(),
                 config_file: config.clone(),
+                health_url_file: None,
                 env: BTreeMap::new(),
             },
             8,
@@ -1177,6 +1437,7 @@ mod tests {
                 runtime: install.join("current/tunnel-client-runtime-cloudflared"),
                 working_dir: install.clone(),
                 config_file: install.join("config.yaml"),
+                health_url_file: None,
                 env: BTreeMap::new(),
             },
             8,
@@ -1192,6 +1453,7 @@ mod tests {
                 runtime: runtime.clone(),
                 working_dir: install.clone(),
                 config_file: install.join("config.yaml"),
+                health_url_file: None,
                 env: BTreeMap::new(),
             },
             8,
@@ -1234,6 +1496,7 @@ mod tests {
                 runtime: install.join("current/tunnel-client-runtime-cloudflared"),
                 working_dir: install.clone(),
                 config_file: install.join("config.yaml"),
+                health_url_file: None,
                 env: BTreeMap::new(),
             },
             16,
@@ -1253,6 +1516,118 @@ mod tests {
         assert_ne!(first.runtime_sha256, second.runtime_sha256);
         assert_eq!(second.runtime_sha256, sha256_file(&runtime).unwrap());
         supervisor.shutdown().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn diagnostics_runs_only_coinstalled_full_client_doctor() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let install = root.path().join("runtime/tunnel-client");
+        let release = install.join("releases/v1.0.0");
+        fs::create_dir_all(&release).unwrap();
+        fs::write(install.join("config.yaml"), b"config").unwrap();
+        let runtime = release.join("tunnel-client-runtime-cloudflared");
+        let full_client = release.join("tunnel-client");
+        fs::write(&runtime, "#!/bin/sh\ntouch runtime-ran\n").unwrap();
+        fs::write(
+            &full_client,
+            "#!/bin/sh\n[ \"$1\" = doctor ] && [ \"$2\" = --json ] || exit 2\ntouch doctor-ran\nprintf '{}'\n",
+        )
+        .unwrap();
+        for binary in [&runtime, &full_client] {
+            fs::set_permissions(binary, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::os::unix::fs::symlink("releases/v1.0.0", install.join("current")).unwrap();
+        let supervisor = TunnelSupervisor::new(
+            TunnelConfig {
+                name: "test".into(),
+                runtime: install.join("current/tunnel-client-runtime-cloudflared"),
+                working_dir: install.clone(),
+                config_file: install.join("config.yaml"),
+                health_url_file: None,
+                env: BTreeMap::new(),
+            },
+            8,
+            Duration::from_millis(50),
+            root.path().to_owned(),
+            EventHub::default(),
+        );
+
+        let diagnostic = supervisor.diagnostics().await;
+        assert!(matches!(diagnostic.state, TunnelDiagnosticState::Available));
+        assert!(diagnostic.full_client_available);
+        assert_eq!(diagnostic.detail, "doctor_completed");
+        assert!(install.join("doctor-ran").is_file());
+        assert!(!install.join("runtime-ran").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn health_probes_keep_runtime_observations_distinct() {
+        use std::os::unix::fs::PermissionsExt;
+
+        use axum::{Json, Router, http::StatusCode, routing::get};
+        use serde_json::json;
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new()
+                    .route("/healthz", get(|| async { StatusCode::OK }))
+                    .route("/readyz", get(|| async { StatusCode::SERVICE_UNAVAILABLE }))
+                    .route(
+                        "/health/mcp",
+                        get(|| async { Json(json!({"status":"ok"})) }),
+                    )
+                    .route(
+                        "/health/control-plane",
+                        get(|| async { Json(json!({"status":"degraded"})) }),
+                    ),
+            )
+            .await
+            .unwrap();
+        });
+        let root = tempfile::tempdir().unwrap();
+        let runtime = root.path().join("tunnel-client-runtime-cloudflared");
+        fs::write(&runtime, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o755)).unwrap();
+        let config = root.path().join("config.yaml");
+        let url_file = root.path().join("health.url");
+        fs::write(&config, b"config").unwrap();
+        fs::write(&url_file, format!("http://{address}/readyz\n")).unwrap();
+        let supervisor = TunnelSupervisor::new(
+            TunnelConfig {
+                name: "test".into(),
+                runtime,
+                working_dir: root.path().to_owned(),
+                config_file: config,
+                health_url_file: Some(url_file),
+                env: BTreeMap::new(),
+            },
+            8,
+            Duration::from_millis(50),
+            root.path().to_owned(),
+            EventHub::default(),
+        );
+
+        let health = supervisor.health().await;
+        assert!(!health.process_running);
+        assert!(matches!(health.liveness, TunnelHealthProbe::Passed));
+        assert!(matches!(health.readiness, TunnelHealthProbe::Failed));
+        assert!(matches!(
+            health.mcp_discovery_health,
+            TunnelHealthProbe::Passed
+        ));
+        assert!(matches!(
+            health.control_plane_poll_health,
+            TunnelHealthProbe::Failed
+        ));
+        server.abort();
     }
 
     #[test]

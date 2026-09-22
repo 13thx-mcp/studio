@@ -25,6 +25,7 @@ mod thirteenthx;
 mod transaction;
 mod tunnel_update;
 pub use fleet::FleetUpdateManager;
+pub use gateway::GatewayControlClient;
 pub use gateway::GatewayUpdateManager;
 pub use inventory::{
     CheckStatus, HostMode, InventoryEntry, InventoryHealth, InventoryService, InventoryView,
@@ -735,6 +736,16 @@ pub trait ReleaseProvider: Send + Sync {
         release: &'a AvailableRelease,
         platform: Platform,
     ) -> StudioResult<&'a ReleaseAsset>;
+
+    /// Optional release asset that must be staged with the primary artifact.
+    /// Providers without a paired-artifact contract keep their single archive.
+    fn select_companion_asset<'a>(
+        &self,
+        _release: &'a AvailableRelease,
+        _platform: Platform,
+    ) -> StudioResult<Option<&'a ReleaseAsset>> {
+        Ok(None)
+    }
 
     async fn checksum_manifest(&self, release: &AvailableRelease) -> StudioResult<Vec<u8>>;
 }
