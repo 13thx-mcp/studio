@@ -15,6 +15,10 @@ metadata. Normal coding profiles exclude control-plane mutations.
 Gateway aggregates resources with child-qualified URIs. Same unqualified resource URI
 from multiple children is a conflict, never a winner chosen by order. Progress is
 forwarded with Gateway-generated token mapping and is informational only: it cannot
-mark a request terminal or successful. Workspace aliases are optional convenience
-metadata and must resolve to a declared root before the target MCP re-applies its own
-confinement.
+mark a request terminal or successful.
+
+Workspace aliases are **not retained in M7**. M7 has no alias registry, alias binding
+lifetime, alias-based request identity, or alias-derived capability expansion. Requests
+continue to use the explicit roots/capabilities owned by the target MCP. Any future
+workspace-alias feature requires a separate ADR and new verification requirements before
+it can enter the routable surface.

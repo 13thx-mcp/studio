@@ -1,76 +1,108 @@
-# M7 Planning Validation
+# M7 Planning and Qualification Validation
 
 ## Scope
 
-The initial planning pass audited current Aira workspace source and created the M7 planning package under:
+This file began as planning-only evidence. M7 implementation has since been completed across Gateway, Filesystem, Fleet and Studio, so this revision records the current qualification boundary and points to the detailed closure audit.
 
-`mcp-server/studio/docs/plans/m7-gateway-coordination/`
+See [M7-QUALIFICATION.md](M7-QUALIFICATION.md) for exact commits, gates, the runtime-only defect/fix, soak evidence, provenance and publication state.
 
-M7.0 execution added permanent Gateway protocol/control-socket viability tests and froze ADR 0026–0032 on dedicated branches: Studio `feature/m7-planning` and Gateway `feature/m7-protocol-spike`. Planning/test commits exist locally; no tag, push, release publication or deployment has been performed. A later uncommitted `Gateway/src/main.rs` change exists in the shared worktree and is treated as concurrent work: P-02/P-03 source evidence is taken from committed Gateway HEAD, not from that unqualified working-tree change.
+## Frozen planning lineage
 
-## Verified planning baselines
+P-01 through P-09 were dispositioned through the Studio planning commits:
 
-- Studio `main`: `48906d892fb37275f8b2d10b73b7cad1eec355c9`, clean before planning writes.
-- Gateway `main`: `02a46af100c0cee5e011b8bc74079d7a78dd3658`, clean.
-- Filesystem `main`: `0f09a665bb94af8388e01051d87cb3f865d4310d`, clean.
-- Fleet worktree: `feature/sonarqube-main-gate`; treated as an unrelated in-progress branch and not modified.
+- `4f3f0d2` — initial M7 source audit/planning package;
+- `7c93d1c` — drain/control-socket and scheduler contracts;
+- `653d2e6` — remaining P-02/P-03/P-05/P-07/P-08 contracts;
+- `57bff30` — P-gate closure checkpoint.
 
-## Commands/checks executed
+Gateway protocol/control viability evidence originated in:
 
-Gateway:
+- `6397661` — rmcp protocol + control-socket permanent tests;
+- `60a0c00` — corrected LF-framed control-socket probe.
 
-- locked SDK: `rmcp 3.4.0`; Rust `1.98.1`;
-- protocol spike: 7/7 PASS;
-- full Rust fmt/check/clippy: PASS;
-- full Rust tests after control-socket probe fix: 16/16 PASS (6 existing + 7 protocol + 3 control-socket);
-- aggregate workspace auto-detection is intentionally not used as the M7 gate because local excluded Node markers cause a false Node-project classification; the markers are not tracked source.
+ADR 0026–0035 now form the frozen M7 contract set.
 
-Filesystem:
+## Qualified implementation lineage
 
-- committed 0.1.0 baseline audited for cap-std confinement, whole-file bounds and sibling-temp/sync/rename overwrite;
-- fresh 2026-09-22 `cargo fmt --check`, `cargo check --all-targets --all-features`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test --all-targets --all-features`: PASS; 3/3 baseline tests;
-- P-05 v2 request/error/CAS/patch contract frozen in ADR 0030;
-- production v2 implementation/tests remain M7.4 work.
+Current implementation baselines:
 
-Tunnel:
+- Gateway merge `5b886c95509b63d6d31c1ba903825b8a385027ff`, version 0.2.0;
+- Filesystem `ec68a043d9c67763c83d32e3a0b4f0a9f8e8c73f`, version 0.2.0;
+- Fleet merge `7bad5e2d4623e9867010572679dfc597a7dc4680`, version 0.3.0;
+- Studio merge `1c5dac50849134364c2fec6e70225b9027265812`, target 0.7.0-beta.
 
-- official latest stable release rechecked on 2026-09-22: v0.0.14;
-- local deployed `tunnel-client-runtime-cloudflared --version/--help`: PASS and confirms v0.0.14 run-only surface;
-- local runtime `doctor --help` and `runtimes --help`: expected unsupported commands;
-- official full-client darwin-arm64 archive downloaded to `/tmp` only; SHA-256 matched official manifest (`b540493c5bdbcdbb755700c8e2e16597e28b1569e425007e0f73111047bd6a64`);
-- disposable full-client `--version`, `doctor --help`, `runtimes --help`: PASS;
-- temporary workspace probe binary removed; Studio worktree was clean immediately afterward;
-- dual-artifact ownership/release boundary frozen in ADR 0032.
+Closure audit additionally produced:
 
-Studio planning branch qualification:
+- Studio `543a6c4` — derive managed reconciliation surfaces from the trusted active host, fixing schema-v1 runtime-only compatibility;
+- Gateway `da432d7` — permanent bounded scheduler soak proof.
 
-- fresh 2026-09-22 fast quality profile: 6/6 checks PASS;
-- Rust fmt/check/clippy/tests PASS;
-- existing Studio Rust suites and web Vitest suite PASS;
-- `git diff --check` PASS after contract reconciliation.
+The two closure commits are qualification descendants of the implementation merges and must be integrated before the existing local Studio/Gateway release tags are treated as final qualified tags.
 
-## P-01..P-09 closure checkpoint
+## Current qualification results
 
-P-01 through P-09 now have committed design/test dispositions.
+### Gateway
 
-Committed evidence:
+Clean detached merge worktree:
 
-- Studio `653d2e6`: closes remaining P-02/P-03/P-05/P-07/P-08 contracts and records version targets;
-- Studio `7c93d1c`: freezes P-06 drain/control-socket and scheduler/concurrency contracts;
-- Studio `4f3f0d2`: initial M7 planning/source-audit package including P-01..P-09 inventory;
-- Gateway `6397661` + `60a0c00`: rmcp protocol and corrected control-socket viability evidence.
+- fmt/check/Clippy — PASS;
+- full suite at merge — 51 tests PASS;
+- qualification branch with permanent soak — 52 tests PASS;
+- 4,000-admission scheduler soak returns active/queued state to zero after every round.
 
-This closes the **P-gate set**, not all of M7.0. Remaining M7.0 blockers are payload/artifact bounds, profile/workspace-context semantics, Gateway→M6 telemetry/privacy DTOs, and the final ADR-set consistency audit.
+### Filesystem
 
-## Not executed / not claimed
+- fmt/check/Clippy — PASS;
+- 10/10 tests PASS;
+- revision/CAS, external-edit conflict, patch/range/search bounds, symlink confinement and replacement-failure cleanup are covered.
 
-- no concurrency/drain/cancellation production tests;
-- no qualified Gateway scheduler/recovery production implementation is claimed by this planning package;
-- no Filesystem v2 production code;
-- no Fleet schema v2 production code (and no M7 writes were made on `feature/sonarqube-main-gate`);
-- no Studio history schema/event change;
-- no persistent Tunnel full-client install or deployed runtime mutation (probe was disposable and checksum-verified);
-- no native M7 qualification/soak;
-- no source-less M7 package smoke.
+### Fleet
 
-These are M7.0+ implementation requirements, not planning-session evidence.
+Clean detached merge worktree:
+
+- 19/19 Python tests PASS;
+- host schema v2, Gateway policy rendering and dual tunnel asset selection are covered.
+
+### Studio
+
+Clean detached merge worktree:
+
+- fast quality profile 6/6 PASS;
+- Rust suites PASS;
+- web Vitest 31/31 PASS.
+
+The explicit runtime-only reconciliation smoke initially failed on merge `1c5dac5` because Studio required the schema-v2 `gateway.policy` surface for a supported schema-v1 host. Closure fix `543a6c4` makes the expected surface set derive from the trusted active host and the same explicit runtime-only smoke then PASSes.
+
+## Workspace alias disposition
+
+Workspace aliases are not implemented or retained in M7. ADR 0034 explicitly retires that proposed surface. Former verification rows R34/R35 are retired by contract rather than presented as implementation PASS.
+
+## Tunnel evidence
+
+The M7 tunnel architecture remains the ADR 0032 dual-artifact boundary:
+
+- runtime-cloudflared stays the Studio-owned daemon;
+- full `tunnel-client` is the bounded diagnostics/preflight companion;
+- both artifacts are same-release verified.
+
+Studio implementation includes exact dual-asset selection/staging, matching version/commit validation, bounded full-client `doctor`, and distinct liveness/readiness/MCP-discovery/control-plane-poll observations.
+
+## Provenance and publication
+
+Clean-source qualification used detached worktrees at the exact Gateway/Fleet/Studio merge commits; Filesystem main was clean.
+
+Remote-refresh publication guards prove these merge commits are not reachable from `origin` and the local release tags are also unpublished:
+
+- Studio `v0.7.0-beta`;
+- Gateway `v0.2.0`;
+- Filesystem `v0.2.0`;
+- Fleet `v0.3.0`.
+
+Local tagging is therefore distinct from publication/deployment. Because Studio `543a6c4` and Gateway `da432d7` are post-tag closure fixes, final tag reconciliation must happen only after those fixes are integrated. No push, public release or deployment is claimed here.
+
+## Current disposition
+
+- M7.0 architecture freeze: complete.
+- P-01..P-09: closed.
+- M7.1–M7.8 implementation: qualified on the recorded commits.
+- M7.9 runtime-only and bounded-soak gaps discovered by closure audit: fixed/proved on dedicated closure branches.
+- Final main integration and local unpublished tag reconciliation: pending.

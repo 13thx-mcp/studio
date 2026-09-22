@@ -1,14 +1,14 @@
 # M7 Dependency-Ordered Execution Checklist
 
-**State:** M7.0 FROZEN / P-01..P-09 CLOSED / PRODUCTION COORDINATOR IN PROGRESS.
+**State:** M7.0 FROZEN / P-01..P-09 CLOSED / M7.1–M7.8 IMPLEMENTED / M7.9 QUALIFIED ON CLOSURE BRANCHES / FINAL MAIN INTEGRATION PENDING.
 
 **P-01..P-09 closure checkpoint:**
 
-- Studio planning/contracts: `653d2e6` (plus prior `7c93d1c`, `4f3f0d2`);
-- Gateway protocol/control-socket evidence: `6397661` + `60a0c00`;
-- Filesystem committed 0.1.0 baseline re-qualified green; no M7.4 production code yet;
-- Fleet M7 changes intentionally not written on `feature/sonarqube-main-gate`;
-- no tag, push, release or deploy is implied by this checkpoint.
+- Studio planning/contracts: `653d2e6` (plus prior `7c93d1c`, `4f3f0d2`); implementation merge `1c5dac5`; runtime-only closure fix `543a6c4`;
+- Gateway protocol/control-socket evidence: `6397661` + `60a0c00`; implementation merge `5b886c9`; bounded-soak qualification `da432d7`;
+- Filesystem M7.4 implementation: `ec68a04`, version 0.2.0;
+- Fleet M7 policy implementation: `7bad5e2`, version 0.3.0; unrelated Sonar work remains isolated on its feature branch;
+- local release tags exist but are verified unpublished; push, release publication and deployment are not implied by this checkpoint.
 
 ## M7.0 — Architecture, protocol and configuration freeze
 
@@ -30,39 +30,18 @@
 
 **Exit:** no unresolved architectural ambiguity can cause side-effect replay, unsafe restart, authority inversion, or config migration uncertainty.
 
-### Remaining M7.0 closure work after P-01..P-09
+### M7.0 closure audit
 
-Close these in dependency order before declaring M7.0 complete:
+The post-P-gate contracts are now frozen by ADR 0033–0035 and reconciled with ADR 0026–0032.
 
-1. **Payload/artifact contract**
-   - freeze request/response/structured/text/binary byte limits;
-   - freeze oversized-result behavior and narrowing guidance;
-   - decide whether spill artifacts are enabled by default;
-   - freeze artifact identity, TTL, per-item/total-disk bounds, cleanup and privacy;
-   - add ADR + R28-R30/Q08 mappings.
+- [x] Payload/artifact bounds and privacy — ADR 0033.
+- [x] Profiles/resources/progress boundary — ADR 0034.
+- [x] Workspace aliases explicitly dropped from M7 — former alias verification rows R34/R35 retired by contract.
+- [x] Gateway→M6 sanitized telemetry/privacy DTO — ADR 0035.
+- [x] Final ADR/COMMON/verification reconciliation.
+- [x] Version targets and downgrade/migration boundaries recorded.
 
-2. **Profiles/tool classification/workspace context**
-   - classification/profile basics are partially frozen by ADR 0031;
-   - freeze exact profile membership/list-changed semantics;
-   - decide whether workspace aliases are retained in M7.6 at all;
-   - if retained, freeze alias registry identity, ambiguity behavior, binding lifetime and confinement re-check;
-   - freeze resource collision policy and progress correlation boundary where needed for M7.6 entry;
-   - add/extend ADR and R31-R37/Q09-Q10 mappings.
-
-3. **Gateway → M6 telemetry/privacy DTO**
-   - freeze exact sanitized event types and required fields;
-   - prohibit raw tool arguments/results by default;
-   - freeze queue/latency/outcome/restart/circuit/payload-guard observations;
-   - freeze history-unavailable behavior: observation failure never alters live request authority/outcome;
-   - add ADR + R38-R41/Q11 mappings.
-
-4. **ADR-set closure audit**
-   - verify ADR 0026-0032 plus the three contracts above cover every M7.0 mandatory decision;
-   - reconcile COMMON / verification matrix / source audit;
-   - run planning consistency + Studio quality gates;
-   - mark `M7.0` status `FROZEN / READY FOR IMPLEMENTATION` only after all remaining boxes above are checked.
-
-M7.0 is frozen. M7.1/M7.2 production implementation is unblocked.
+M7.0 is frozen. Current implementation/qualification evidence is tracked in [M7-QUALIFICATION.md](M7-QUALIFICATION.md).
 
 ## M7.1 — Request coordination core
 
@@ -148,8 +127,8 @@ M7.0 is frozen. M7.1/M7.2 production implementation is unblocked.
 - [x] Preserve child base allowlist as a hard ceiling.
 - [x] Emit `tools/list_changed` on profile/catalog changes.
 - [x] Keep control-plane mutations out of normal coding profile.
-- [x] Implement bounded workspace alias registry/binding if retained by final M7.0 contract — aliases are not retained by ADR 0034.
-- [x] Re-apply underlying MCP confinement after alias resolution.
+- [x] Workspace alias registry/binding — **RETIRED by ADR 0034**; aliases are not part of the M7 surface.
+- [x] Alias confinement requirement — **N/A after ADR 0034 retirement**; explicit target MCP confinement remains authoritative.
 - [x] Aggregate `resources/list` and `resources/read` with collision policy.
 - [x] Forward progress with token/correlation mapping.
 - [x] Prove progress cannot mark operation success.
@@ -199,12 +178,12 @@ M7.0 is frozen. M7.1/M7.2 production implementation is unblocked.
 - [x] Resources/progress proof.
 - [x] M6 telemetry-without-payload proof.
 - [x] Tunnel adapter health/readiness/poll-health proof.
-- [x] Long-running soak/fault injection.
-- [x] Runtime-only/source-less smoke.
+- [x] Long-running soak/fault injection — Gateway qualification `da432d7`: 4,000 bounded admissions plus permanent cancellation/crash/drain/artifact-pressure fault tests.
+- [x] Runtime-only/source-less smoke — pre-fix merge exposed a real surface-count defect; Studio `543a6c4` fixes it and the explicit runtime-only smoke PASSes.
 - [x] M5/M6 regression suites.
-- [x] Clean-source provenance.
-- [x] Documentation/changelog/version updates.
-- [x] Independent review before closure — dev-review corrected Filesystem CAS serialization/recheck, symlink confinement, and replacement-failure cleanup; all final gates pass.
+- [x] Clean-source provenance — detached exact-merge audit worktrees were clean; see M7-QUALIFICATION.
+- [x] Documentation/changelog/version updates — version targets are present; qualification notes local tags are pre-closure/unpublished pending reconciliation.
+- [x] Independent review before closure — Filesystem CAS/confinement/cleanup corrections plus this closure audit's runtime-only and soak findings are recorded; final release integration remains pending.
 
 ## Branch/repository discipline
 
