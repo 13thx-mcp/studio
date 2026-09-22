@@ -8,6 +8,9 @@ pub enum StudioError {
     #[error("history storage error: {0}")]
     History(String),
 
+    #[error("automation error: {0}")]
+    Automation(String),
+
     #[error("MCP server not found: {0}")]
     NotFound(String),
 

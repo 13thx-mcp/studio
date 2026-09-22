@@ -28,6 +28,45 @@ runtime_root = "../runtime"
 # git = "0.1.0"
 # tunnel = "0.0.14"
 
+# M8 automation foundation. Missing [automation] is equivalent to these safe
+# manual/disabled policies. M8.1 persists scheduler/circuit state only and
+# performs no automatic release check, staging, activation, restart, or
+# reconciliation mutation. Fleet-managed policy rendering is introduced by M8.5.
+[automation]
+startup_grace_seconds = 30
+health_interval_seconds = 15
+cleanup_interval_seconds = 3600
+
+[automation.updates]
+policy = "manual"
+check_on_startup = false
+check_interval_seconds = 21600
+max_consecutive_failures = 5
+circuit_cooldown_seconds = 21600
+prepared_ttl_seconds = 21600
+max_staging_bytes = 1073741824
+
+[automation.reconciliation]
+policy = "manual"
+check_on_startup = true
+check_interval_seconds = 300
+max_consecutive_failures = 5
+circuit_cooldown_seconds = 21600
+
+[automation.restart]
+mcp = "disabled"
+tunnel = "disabled"
+max_attempts = 3
+stability_window_seconds = 30
+initial_backoff_seconds = 1
+max_backoff_seconds = 30
+circuit_cooldown_seconds = 60
+
+[automation.maintenance]
+weekdays_utc = ["sat", "sun"]
+start_utc = "02:00"
+duration_minutes = 120
+
 # Optional server-side secret references. Values are resolved only by Studio
 # and are never returned through the API/WebSocket/dashboard.
 # [tunnel.env]
