@@ -1,6 +1,6 @@
-# M7 Common Contracts — Draft Normative Freeze
+# M7 Common Contracts — Normative Freeze
 
-**Status:** DRAFT. Becomes normative only after M7.0 review/acceptance.
+**Status:** FROZEN / ACCEPTED FOR M7. M7.0 is closed and the implementation has been qualified against these contracts.
 
 ## 1. Authority map
 

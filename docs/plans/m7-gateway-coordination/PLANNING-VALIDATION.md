@@ -36,7 +36,7 @@ Closure audit additionally produced:
 - Studio `543a6c4` — derive managed reconciliation surfaces from the trusted active host, fixing schema-v1 runtime-only compatibility;
 - Gateway `da432d7` — permanent bounded scheduler soak proof.
 
-The two closure commits are qualification descendants of the implementation merges and must be integrated before the existing local Studio/Gateway release tags are treated as final qualified tags.
+The two closure commits are qualification descendants of the implementation merges. They are now integrated on `main`: Studio `3423d8e` contains `543a6c4`, and Gateway `36aea90` contains `da432d7`.
 
 ## Current qualification results
 
@@ -97,12 +97,13 @@ Remote-refresh publication guards prove these merge commits are not reachable fr
 - Filesystem `v0.2.0`;
 - Fleet `v0.3.0`.
 
-Local tagging is therefore distinct from publication/deployment. Because Studio `543a6c4` and Gateway `da432d7` are post-tag closure fixes, final tag reconciliation must happen only after those fixes are integrated. No push, public release or deployment is claimed here.
+Local tagging remains distinct from publication/deployment. Main integration is complete. Gateway/Filesystem/Fleet release tags point at their qualified main commits; Studio `v0.7.0-beta` still points at pre-closure merge `1c5dac5` and requires deliberate local tag reconciliation before publication. Fresh remote publication guards confirm the qualified main commits and all four M7 tags remain unpublished. No push, public release or deployment is claimed here.
 
 ## Current disposition
 
 - M7.0 architecture freeze: complete.
 - P-01..P-09: closed.
 - M7.1–M7.8 implementation: qualified on the recorded commits.
-- M7.9 runtime-only and bounded-soak gaps discovered by closure audit: fixed/proved on dedicated closure branches.
-- Final main integration and local unpublished tag reconciliation: pending.
+- M7.9 runtime-only and bounded-soak gaps discovered by closure audit: fixed/proved and integrated on main.
+- Final main integration: complete.
+- Local unpublished tag reconciliation: Gateway/Filesystem/Fleet aligned; Studio `v0.7.0-beta` pending.
