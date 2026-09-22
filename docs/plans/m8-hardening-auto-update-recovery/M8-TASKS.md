@@ -68,20 +68,20 @@
 
 ## M8.3 — Update checks, notify-only and auto-prepare
 
-- [ ] Implement periodic/startup update check policy.
-- [ ] One concurrent provider check batch maximum.
-- [ ] Apply desired exact-version precedence.
-- [ ] Default selection to trusted stable releases.
-- [ ] Reject automatic downgrade/same-version repair.
-- [ ] Implement notify-only event/history/UI state.
-- [ ] Implement auto-prepare through existing component managers.
-- [ ] Assert no active runtime mutation during auto-prepare.
-- [ ] Track current-process prepared references only.
-- [ ] On Studio restart, refuse automatic apply of previous-process Generic/Gateway/Fleet staging.
-- [ ] Add bounded ready-staging inventory/TTL/aggregate budget.
-- [ ] Add source hygiene observation for development hosts.
-- [ ] Dirty/conflicted source blocks activation but not notify/prepare.
-- [ ] Add provider failure circuit and recovery tests.
+- [x] Implement periodic/startup update check policy.
+- [x] One concurrent provider check batch maximum.
+- [x] Apply desired exact-version precedence.
+- [x] Default selection to trusted stable releases.
+- [x] Reject automatic downgrade/same-version repair.
+- [x] Implement notify-only event/history/UI state.
+- [x] Implement auto-prepare through existing component managers.
+- [x] Assert no active runtime mutation during auto-prepare.
+- [x] Track current-process prepared references only.
+- [x] On Studio restart, refuse automatic apply of previous-process Generic/Gateway/Fleet staging.
+- [x] Add bounded ready-staging inventory/TTL/aggregate budget.
+- [x] Add source hygiene observation for development hosts.
+- [x] Dirty/conflicted source blocks activation but not notify/prepare.
+- [x] Add provider failure circuit and recovery tests.
 
 **Exit:** M8 can safely observe and stage releases without activation.
 
