@@ -2,7 +2,7 @@ SHELL := /bin/bash
 
 PNPM ?= pnpm
 CARGO ?= cargo
-CONFIG ?= studio.example.toml
+CONFIG ?= studio.local.toml
 HOST ?= 127.0.0.1
 STUDIO_PORT ?= 18100
 WEB_PORT ?= 5173

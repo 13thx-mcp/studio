@@ -23,6 +23,7 @@ const CHECKSUM_MANIFEST_NAME: &str = "SHA256SUMS.txt";
 
 pub const TUNNEL_RUNTIME_ASSET_PREFIX: &str = "tunnel-client-runtime-cloudflared";
 pub const TUNNEL_RUNTIME_BINARY_NAME: &str = "tunnel-client-runtime-cloudflared";
+pub const TUNNEL_FULL_ASSET_PREFIX: &str = "tunnel-client";
 
 #[derive(Clone)]
 pub struct OpenAiTunnelReleaseProvider {
@@ -210,7 +211,24 @@ impl OpenAiTunnelReleaseProvider {
             checksum_url.ok_or_else(|| StudioError::MissingChecksumManifest {
                 component: policy.id.to_string(),
             })?;
-        self.validate_runtime_asset_family(policy, &version, &assets)?;
+        let runtime_targets = self.validate_platform_asset_family(
+            policy,
+            &version,
+            &assets,
+            TUNNEL_RUNTIME_ASSET_PREFIX,
+        )?;
+        let full_targets = self.validate_platform_asset_family(
+            policy,
+            &version,
+            &assets,
+            TUNNEL_FULL_ASSET_PREFIX,
+        )?;
+        if runtime_targets != full_targets {
+            return Err(StudioError::MalformedReleaseMetadata {
+                component: policy.id.to_string(),
+                detail: "full-client and runtime-cloudflared platform assets differ".into(),
+            });
+        }
 
         Ok(AvailableRelease {
             component: policy.id,
@@ -221,14 +239,15 @@ impl OpenAiTunnelReleaseProvider {
         })
     }
 
-    fn validate_runtime_asset_family(
+    fn validate_platform_asset_family(
         &self,
         policy: &ComponentPolicy,
         version: &Version,
         assets: &[ReleaseAsset],
-    ) -> StudioResult<()> {
-        let expected_prefix = format!("{TUNNEL_RUNTIME_ASSET_PREFIX}-v{version}-");
-        let generic_prefix = format!("{TUNNEL_RUNTIME_ASSET_PREFIX}-v");
+        prefix: &str,
+    ) -> StudioResult<BTreeSet<String>> {
+        let expected_prefix = format!("{prefix}-v{version}-");
+        let generic_prefix = format!("{prefix}-v");
         let mut targets = BTreeSet::new();
 
         for asset in assets {
@@ -243,7 +262,7 @@ impl OpenAiTunnelReleaseProvider {
                 return Err(StudioError::MalformedReleaseMetadata {
                     component: policy.id.to_string(),
                     detail: format!(
-                        "runtime-cloudflared ZIP {} does not match release v{version}",
+                        "{prefix} ZIP {} does not match release v{version}",
                         asset.name
                     ),
                 });
@@ -253,7 +272,7 @@ impl OpenAiTunnelReleaseProvider {
                 return Err(StudioError::MalformedReleaseMetadata {
                     component: policy.id.to_string(),
                     detail: format!(
-                        "runtime-cloudflared ZIP {} has malformed platform identity",
+                        "{prefix} ZIP {} has malformed platform identity",
                         asset.name
                     ),
                 });
@@ -261,7 +280,7 @@ impl OpenAiTunnelReleaseProvider {
             if !targets.insert(target.to_owned()) {
                 return Err(StudioError::AmbiguousReleaseAssetFamily {
                     component: policy.id.to_string(),
-                    family: TUNNEL_RUNTIME_ASSET_PREFIX.into(),
+                    family: prefix.into(),
                     detail: format!("duplicate platform target {target}"),
                 });
             }
@@ -270,10 +289,10 @@ impl OpenAiTunnelReleaseProvider {
         if targets.is_empty() {
             return Err(StudioError::MissingReleaseAssetFamily {
                 component: policy.id.to_string(),
-                family: TUNNEL_RUNTIME_ASSET_PREFIX.into(),
+                family: prefix.into(),
             });
         }
-        Ok(())
+        Ok(targets)
     }
 
     fn validate_asset_url(&self, policy: &ComponentPolicy, value: &str) -> StudioResult<()> {
@@ -344,6 +363,35 @@ impl ReleaseProvider for OpenAiTunnelReleaseProvider {
     ) -> StudioResult<&'a ReleaseAsset> {
         let trusted = self.trusted_policy_by_release(release)?;
         select_release_asset(trusted, release, platform)
+    }
+
+    fn select_companion_asset<'a>(
+        &self,
+        release: &'a AvailableRelease,
+        platform: Platform,
+    ) -> StudioResult<Option<&'a ReleaseAsset>> {
+        let trusted = self.trusted_policy_by_release(release)?;
+        let expected = format!(
+            "{TUNNEL_FULL_ASSET_PREFIX}-v{}-{platform}.zip",
+            release.version
+        );
+        let matches = release
+            .assets
+            .iter()
+            .filter(|asset| asset.name == expected)
+            .collect::<Vec<_>>();
+        match matches.as_slice() {
+            [asset] => Ok(Some(*asset)),
+            [] => Err(StudioError::ReleaseAssetNotFound {
+                component: trusted.id.to_string(),
+                expected,
+            }),
+            _ => Err(StudioError::AmbiguousReleaseAsset {
+                component: trusted.id.to_string(),
+                expected,
+                count: matches.len(),
+            }),
+        }
     }
 
     async fn checksum_manifest(&self, release: &AvailableRelease) -> StudioResult<Vec<u8>> {
@@ -501,7 +549,8 @@ mod tests {
                 {"id": 6, "name": format!("{TUNNEL_RUNTIME_ASSET_PREFIX}-{tag}-darwin-arm64-licenses.txt"), "browser_download_url": asset_url(tag, &format!("{TUNNEL_RUNTIME_ASSET_PREFIX}-{tag}-darwin-arm64-licenses.txt"))},
                 {"id": 7, "name": format!("{TUNNEL_RUNTIME_ASSET_PREFIX}-{tag}-darwin-arm64.spdx.json"), "browser_download_url": asset_url(tag, &format!("{TUNNEL_RUNTIME_ASSET_PREFIX}-{tag}-darwin-arm64.spdx.json"))},
                 {"id": 8, "name": format!("{TUNNEL_RUNTIME_ASSET_PREFIX}-source-{tag}.tar.gz"), "browser_download_url": asset_url(tag, &format!("{TUNNEL_RUNTIME_ASSET_PREFIX}-source-{tag}.tar.gz"))},
-                {"id": 9, "name": format!("tunnel-client-{tag}-darwin-arm64.zip"), "browser_download_url": asset_url(tag, &format!("tunnel-client-{tag}-darwin-arm64.zip"))}
+                {"id": 9, "name": format!("{TUNNEL_FULL_ASSET_PREFIX}-{tag}-darwin-amd64.zip"), "browser_download_url": asset_url(tag, &format!("{TUNNEL_FULL_ASSET_PREFIX}-{tag}-darwin-amd64.zip"))},
+                {"id": 10, "name": format!("{TUNNEL_FULL_ASSET_PREFIX}-{tag}-darwin-arm64.zip"), "browser_download_url": asset_url(tag, &format!("{TUNNEL_FULL_ASSET_PREFIX}-{tag}-darwin-arm64.zip"))}
             ]
         }))
         .unwrap()
@@ -524,7 +573,7 @@ mod tests {
         assert_eq!(release.component, ComponentId::Tunnel);
         assert_eq!(release.version.to_string(), "0.0.14");
         assert_eq!(release.tag, "v0.0.14");
-        assert_eq!(release.assets.len(), 9);
+        assert_eq!(release.assets.len(), 10);
         assert!(
             release
                 .assets
@@ -537,6 +586,9 @@ mod tests {
                 .iter()
                 .any(|asset| asset.name == runtime_asset("v0.0.14", "darwin-arm64"))
         );
+        assert!(release.assets.iter().any(|asset| {
+            asset.name == format!("{TUNNEL_FULL_ASSET_PREFIX}-v0.0.14-darwin-arm64.zip")
+        }));
         assert_eq!(
             release.checksum_manifest_url,
             asset_url("v0.0.14", CHECKSUM_MANIFEST_NAME)
@@ -623,6 +675,24 @@ mod tests {
             provider.latest_release(&component).await.unwrap_err(),
             StudioError::MissingReleaseAssetFamily { component, family }
                 if component == "tunnel" && family == TUNNEL_RUNTIME_ASSET_PREFIX
+        ));
+    }
+
+    #[tokio::test]
+    async fn mismatched_full_client_platform_family_is_rejected() {
+        let (provider, http) = provider();
+        let catalog = catalog();
+        let component = tunnel_policy(&catalog);
+        let url = OpenAiTunnelReleaseProvider::latest_url(&component);
+        let mut body: serde_json::Value =
+            serde_json::from_slice(&release_body("v0.0.14", false, false)).unwrap();
+        body["assets"].as_array_mut().unwrap().retain(|asset| {
+            asset["name"] != format!("{TUNNEL_FULL_ASSET_PREFIX}-v0.0.14-darwin-amd64.zip")
+        });
+        http.respond(url, ok(serde_json::to_vec(&body).unwrap()));
+        assert!(matches!(
+            provider.latest_release(&component).await.unwrap_err(),
+            StudioError::MalformedReleaseMetadata { component, .. } if component == "tunnel"
         ));
     }
 
@@ -781,6 +851,35 @@ mod tests {
         assert_eq!(
             selected.name,
             "tunnel-client-runtime-cloudflared-v0.0.14-darwin-arm64.zip"
+        );
+    }
+
+    #[test]
+    fn provider_selects_exact_full_client_companion() {
+        let (provider, _) = provider();
+        let release = AvailableRelease {
+            component: ComponentId::Tunnel,
+            version: Version::parse("0.0.14").unwrap(),
+            tag: "v0.0.14".into(),
+            assets: vec![ReleaseAsset {
+                name: "tunnel-client-v0.0.14-darwin-arm64.zip".into(),
+                download_url: asset_url("v0.0.14", "tunnel-client-v0.0.14-darwin-arm64.zip"),
+            }],
+            checksum_manifest_url: asset_url("v0.0.14", CHECKSUM_MANIFEST_NAME),
+        };
+        assert_eq!(
+            provider
+                .select_companion_asset(
+                    &release,
+                    Platform {
+                        os: crate::update::OperatingSystem::Darwin,
+                        arch: crate::update::Architecture::Arm64,
+                    },
+                )
+                .unwrap()
+                .unwrap()
+                .name,
+            "tunnel-client-v0.0.14-darwin-arm64.zip"
         );
     }
 

@@ -26,7 +26,7 @@ use crate::{
 
 use super::{
     ComponentCatalog, ComponentId, InventoryService,
-    gateway::probe_gateway_tool_names,
+    gateway::{GatewayControlClient, probe_gateway_tool_names},
     transaction::{now_ms, sanitize_transaction_error},
 };
 
@@ -34,7 +34,6 @@ const PLAN_SCHEMA_VERSION: u32 = 1;
 const MANAGED_SCHEMA_VERSION: u32 = 1;
 const PLAN_TIMEOUT: Duration = Duration::from_secs(15);
 const PLAN_MAX_BYTES: usize = 2 * 1024 * 1024;
-const GATEWAY_RELOAD_WAIT: Duration = Duration::from_millis(1800);
 const TUNNEL_HEALTH_WINDOW: Duration = Duration::from_millis(800);
 const MANIFEST_RELATIVE: &str = "fleet/state/reconciliation.json";
 const BACKUP_PREFIX: &str = "reconciliation-backup-";
@@ -435,6 +434,13 @@ fn expected_surfaces() -> BTreeMap<&'static str, (PathBuf, BTreeSet<String>)> {
             ),
         ),
         (
+            "gateway.policy",
+            (
+                PathBuf::from("gateway/gateway.yaml"),
+                BTreeSet::from(["gateway_reload".into()]),
+            ),
+        ),
+        (
             "studio.config",
             (
                 PathBuf::from("studio/studio.toml"),
@@ -526,6 +532,7 @@ struct StudioReconciliationRuntime {
     catalog: ComponentCatalog,
     tunnel: Arc<TunnelSupervisor>,
     inventory: Arc<InventoryService>,
+    control: GatewayControlClient,
 }
 
 #[async_trait]
@@ -538,7 +545,7 @@ impl ReconciliationRuntime for StudioReconciliationRuntime {
         let state = self.tunnel.status().await.state;
         match state {
             TunnelState::Running => {
-                sleep(GATEWAY_RELOAD_WAIT).await;
+                self.control.reload().await?;
                 if self.tunnel.status().await.state != TunnelState::Running {
                     return Err(StudioError::UpdateVerificationFailed {
                         component: "reconciliation".into(),
@@ -563,7 +570,16 @@ impl ReconciliationRuntime for StudioReconciliationRuntime {
                 "tunnel restart requires the tunnel to be running".into(),
             ));
         }
-        self.tunnel.stop().await?;
+        let drain_generation = self.control.drain_for_reconciliation().await?;
+        if let Err(error) = self.tunnel.stop().await {
+            let resume_error = self.control.resume(drain_generation).await.err();
+            return Err(StudioError::UpdateVerificationFailed {
+                component: "reconciliation".into(),
+                detail: format!(
+                    "tunnel stop failed after Gateway drain: {error}; drain resume failed: {resume_error:?}"
+                ),
+            });
+        }
         self.tunnel.start().await?;
         sleep(TUNNEL_HEALTH_WINDOW).await;
         if self.tunnel.status().await.state != TunnelState::Running {
@@ -699,6 +715,7 @@ impl RuntimeReconciler {
                 catalog: catalog.clone(),
                 tunnel,
                 inventory,
+                control: GatewayControlClient::from_catalog(&catalog),
             }),
             catalog,
             events,
@@ -2008,6 +2025,11 @@ mod tests {
                 ["gateway_reload"].as_slice(),
             ),
             (
+                "gateway.policy",
+                "gateway/gateway.yaml",
+                ["gateway_reload"].as_slice(),
+            ),
+            (
                 "studio.config",
                 "studio/studio.toml",
                 ["studio_restart"].as_slice(),
@@ -2546,6 +2568,7 @@ tool_allowlist = []
                 runtime: tunnel_runtime,
                 working_dir: runtime_root.join("tunnel-client"),
                 config_file: runtime_root.join("tunnel-client/config.yaml"),
+                health_url_file: None,
                 env: BTreeMap::new(),
             },
             32,
@@ -2748,6 +2771,21 @@ tool_allowlist = []
             applied.studio_config_activation,
             StudioConfigActivation::Active
         );
+    }
+
+    #[tokio::test]
+    async fn gateway_policy_reconciliation_is_managed_without_studio_restart() {
+        let (_temp, reconciler, provider, runtime) = fixture();
+        reconciler.check().await.unwrap();
+        let mut next = provider.plan.lock().unwrap().clone();
+        let policy = next.outputs.get_mut("gateway.policy").unwrap();
+        policy.bytes = b"gateway.policy:v2\n".to_vec();
+        policy.sha256 = sha256_bytes(&policy.bytes);
+        *provider.plan.lock().unwrap() = next;
+
+        let applied = reconciler.apply().await.unwrap();
+        assert!(!applied.studio_restart_required);
+        assert_eq!(*runtime.reload_count.lock().unwrap(), 1);
     }
 
     #[test]

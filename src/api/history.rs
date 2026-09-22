@@ -9,7 +9,10 @@ use serde::Serialize;
 
 use crate::{
     error::StudioError,
-    storage::{HistoryListRequest, HistoryReadRequest, HistoryReadResponse, MetricsRequest},
+    storage::{
+        GatewayLatencyRequest, HistoryListRequest, HistoryReadRequest, HistoryReadResponse,
+        MetricsRequest,
+    },
 };
 
 use super::{AppState, ensure_same_origin};
@@ -27,6 +30,7 @@ pub(super) fn router() -> Router<AppState> {
         .route("/drift", get(drift))
         .route("/subjects/{subject_id}/lineage", get(lineage))
         .route("/metrics", get(metrics))
+        .route("/gateway-latency", get(gateway_latency))
 }
 
 async fn status(
@@ -172,6 +176,19 @@ async fn metrics(
     let response = read(&state, HistoryReadRequest::Metrics(request)).await?;
     match response {
         HistoryReadResponse::Metrics(value) => json_response(value),
+        _ => Err(HistoryApiError::internal("history response mismatch")),
+    }
+}
+
+async fn gateway_latency(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(request): Query<GatewayLatencyRequest>,
+) -> Result<Response, HistoryApiError> {
+    boundary(&headers)?;
+    let response = read(&state, HistoryReadRequest::GatewayLatency(request)).await?;
+    match response {
+        HistoryReadResponse::GatewayLatency(value) => json_response(value),
         _ => Err(HistoryApiError::internal("history response mismatch")),
     }
 }
