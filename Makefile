@@ -2,30 +2,38 @@ SHELL := /bin/bash
 
 PNPM ?= pnpm
 CARGO ?= cargo
+PYTHON ?= python3
 CONFIG ?= studio.local.toml
 HOST ?= 127.0.0.1
 STUDIO_PORT ?= 18100
 WEB_PORT ?= 5173
+FLEET_HOST ?= aira
 
-.PHONY: help install web-install web-dev web-build build run dev check fmt clippy test audit release clean
+.PHONY: help install web-install web-dev web-build build run dev check fmt clippy test audit release clean \
+	m7-preflight m7-fleet-check m7-targeted m7-closure
 
 help:
 	@echo "MCP Studio development commands"
 	@echo
-	@echo "  make install    Install frontend dependencies"
-	@echo "  make dev        Run Rust backend + Vite dev server"
-	@echo "  make run        Build frontend and run Studio on $(HOST):$(STUDIO_PORT)"
-	@echo "  make build      Build frontend and Rust backend"
-	@echo "  make check      Run Rust + frontend quality gates"
-	@echo "  make test       Run Rust + frontend tests"
-	@echo "  make audit      Run cargo audit"
-	@echo "  make release    Build locked Rust release + frontend production assets"
-	@echo "  make clean      Remove Rust and frontend generated build output"
+	@echo "  make install         Install frontend dependencies"
+	@echo "  make dev             Run Rust backend + Vite dev server"
+	@echo "  make run             Build frontend and run Studio on $(HOST):$(STUDIO_PORT)"
+	@echo "  make build           Build frontend and Rust backend"
+	@echo "  make check           Run Rust + frontend quality gates"
+	@echo "  make test            Run Rust + frontend tests"
+	@echo "  make audit           Run cargo audit"
+	@echo "  make release         Build locked Rust release + frontend production assets"
+	@echo "  make m7-preflight    Capture M7 closure provenance/toolchain/Fleet contract"
+	@echo "  make m7-fleet-check  Validate Fleet pure render-plan contract"
+	@echo "  make m7-targeted     Run post-qualification M7 regression proofs"
+	@echo "  make m7-closure      Run full clean-source M7 pre-M8 qualification"
+	@echo "  make clean           Remove Rust and frontend generated build output"
 	@echo
 	@echo "Variables:"
 	@echo "  CONFIG=<path>       Studio config file (default: $(CONFIG))"
 	@echo "  STUDIO_PORT=<port>  Studio port reference (default: $(STUDIO_PORT))"
 	@echo "  WEB_PORT=<port>     Vite dev port (default: $(WEB_PORT))"
+	@echo "  FLEET_HOST=<host>   Fleet host profile for M7 qualification (default: $(FLEET_HOST))"
 
 install: web-install
 
@@ -87,6 +95,18 @@ audit:
 
 release: web-build
 	$(CARGO) build --release --locked
+
+m7-preflight:
+	$(PYTHON) scripts/verify-m7-closure.py --profile preflight --host $(FLEET_HOST)
+
+m7-fleet-check:
+	$(PYTHON) scripts/verify-m7-closure.py --profile fleet-contract --host $(FLEET_HOST)
+
+m7-targeted:
+	$(PYTHON) scripts/verify-m7-closure.py --profile targeted --host $(FLEET_HOST)
+
+m7-closure:
+	$(PYTHON) scripts/verify-m7-closure.py --profile full --host $(FLEET_HOST) --require-clean
 
 clean:
 	$(CARGO) clean
